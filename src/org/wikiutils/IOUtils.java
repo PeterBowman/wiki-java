@@ -77,7 +77,7 @@ public class IOUtils
 		Scanner m = new Scanner(new File(file), encoding);
 		ArrayList<String> l = new ArrayList<String>();
 		while (m.hasNextLine())
-			l.add(prefix + m.nextLine().trim());
+			l.add(prefix + m.nextLine()/*.trim()*/);
 		return l.toArray(new String[0]);
 	}
 	
