@@ -411,7 +411,7 @@ public class Wiki implements Serializable
     protected String query, base, apiUrl;
     protected String scriptPath = "/w";
     private boolean wgCapitalLinks = true;
-    private String timezone = "UTC";
+    protected String timezone = "UTC";
 
     // user management
     private Map<String, String> cookies = new HashMap<>(12);
@@ -423,8 +423,8 @@ public class Wiki implements Serializable
     private transient List<String> watchlist = null;
 
     // preferences
-    private int max = 500;
-    private int slowmax = 50;
+    protected int max = 500;
+    protected int slowmax = 50;
     private int throttle = 10000; // throttle
     private int maxlag = 5;
     private int assertion = ASSERT_NONE; // assertion mode
@@ -437,7 +437,7 @@ public class Wiki implements Serializable
     private static final Logger logger = Logger.getLogger("wiki");
 
     // retry flag
-    private boolean retry = true;
+    protected boolean retry = true;
    
     // serial version
     private static final long serialVersionUID = -8745212681497643456L;
@@ -1900,7 +1900,7 @@ public class Wiki implements Serializable
         
         // deleted revisions token
         String titleenc = URLEncoder.encode(normalize(title), "UTF-8");
-        String delrev = query + "action=query&list=deletedrevs&drlimit=1&drprop=token&titles=" + titleenc;
+        String delrev = fetch(query + "action=query&list=deletedrevs&drlimit=1&drprop=token&titles=" + titleenc, "undelete");
         if (!delrev.contains("token=\"")) // nothing to undelete
         {
             log(Level.WARNING, "undelete", "Page \"" + title + "\" has no deleted revisions!");
@@ -2132,6 +2132,7 @@ public class Wiki implements Serializable
     	StringBuilder url = new StringBuilder(query);
         url.append("prop=links&pllimit=max&titles=");
         url.append(URLEncoder.encode(normalize(title), "UTF-8"));
+        url.append("&rawcontinue=");
         String plcontinue = null;
         List<String> links = new ArrayList<>(750);
         do
@@ -2363,6 +2364,7 @@ public class Wiki implements Serializable
             url.append(calendarToTimestamp(end));
         }
         String rvcontinue = null;
+        url.append("&rawcontinue=");
         List<Revision> revisions = new ArrayList<>(1500);
 
         // main loop
@@ -2449,6 +2451,7 @@ public class Wiki implements Serializable
         url.append(URLEncoder.encode(title, "UTF-8"));
         
         String drvcontinue = null;
+        url.append("&rawcontinue=");
         List<Revision> delrevs = new ArrayList<>(500);
         do
         {
@@ -2519,7 +2522,7 @@ public class Wiki implements Serializable
             throw new CredentialNotFoundException("Permission denied: not able to view deleted history");
         
         StringBuilder url = new StringBuilder(query);
-        url.append("list=alldeletedrevisions&adrprop=ids%7Cuser%7Cflags%7Csize%7Ccomment&adrlimit=max");
+        url.append("list=alldeletedrevisions&adrprop=ids%7Cuser%7Cflags%7Csize%7Ccomment%7Ctimestamp&adrlimit=max");
         if (reverse)
             url.append("&adrdir=newer");
         if (start != null)
@@ -2537,6 +2540,7 @@ public class Wiki implements Serializable
         constructNamespaceString(url, "adr", namespace);
         
         String adrcontinue = null;
+        url.append("&rawcontinue=");
         List<Revision> delrevs = new ArrayList<>(500);
         do
         {
@@ -2548,7 +2552,7 @@ public class Wiki implements Serializable
             adrcontinue = parseAttribute(response, "adrcontinue", 0);
             
             // parse
-            int x = response.indexOf("<deletedrevs>");
+            int x = response.indexOf("<alldeletedrevisions>");
             if (x < 0) // no deleted history
                 break;
             for (x = response.indexOf("<page ", x); x > 0; x = response.indexOf("<page ", ++x))
@@ -2598,6 +2602,7 @@ public class Wiki implements Serializable
         url.append(namespace);
         
         String drcontinue = null;
+        url.append("&rawcontinue=");
         List<String> pages = new ArrayList<>();
         do
         {
@@ -3619,6 +3624,7 @@ public class Wiki implements Serializable
         }
         List<LogEntry> uploads = new ArrayList<>();
         String aicontinue = null;
+        url.append("&rawcontinue=");
         do
         {
             String line;
@@ -4012,6 +4018,7 @@ public class Wiki implements Serializable
         }
         List<Revision> revisions = new ArrayList<>(7500);
         String uccontinue = "", ucstart = "";
+        temp.append("&rawcontinue=");
         if (start != null)
         {
             temp.append("&ucstart=");
@@ -4210,6 +4217,7 @@ public class Wiki implements Serializable
         // set up some things
         String url = query + "list=watchlistraw&wrlimit=max";
         String wrcontinue = null;
+        url += "&rawcontinue=";
         watchlist = new ArrayList<>(750);
         // fetch the watchlist
         do
@@ -4396,6 +4404,7 @@ public class Wiki implements Serializable
         // fiddle
         List<String> pages = new ArrayList<>(1333);
         String next = "";
+        url.append("&rawcontinue=");
         do
         {
             // connect
@@ -4454,6 +4463,7 @@ public class Wiki implements Serializable
         // main loop
         List<String> pages = new ArrayList<>(6667); // generally enough
         String blcontinue = null;
+        url.append("&rawcontinue=");
         do
         {
             // fetch data
@@ -4495,6 +4505,7 @@ public class Wiki implements Serializable
         // main loop
         List<String> pages = new ArrayList<>(6667); // generally enough
         String eicontinue = null;
+        url.append("&rawcontinue=");
         do
         {
             // fetch data
@@ -4564,6 +4575,7 @@ public class Wiki implements Serializable
             constructNamespaceString(url, "cm", ns);
         List<String> members = new ArrayList<>();
         String next = "";
+        url.append("&rawcontinue=");
         do
         {
             if (!next.isEmpty())
@@ -5044,7 +5056,7 @@ public class Wiki implements Serializable
         if (xml.contains("commenthidden")) // oversighted
             details = null;
         else if (type.equals(MOVE_LOG))
-            details = parseAttribute(xml, "new_title", 0); // the new title
+            details = parseAttribute(xml, "target_title", 0); // the new title
         else if (type.equals(BLOCK_LOG) || xml.contains("<block"))
         {
             int a = xml.indexOf("<block") + 7;
@@ -5275,6 +5287,7 @@ public class Wiki implements Serializable
         // parse
         List<String> pages = new ArrayList<>(6667);
         String next = null;
+        url.append("&rawcontinue=");
         do
         {
             // connect and read
@@ -5328,7 +5341,7 @@ public class Wiki implements Serializable
         if (page.equals("Unwatchedpages") && (user == null || !user.isAllowedTo("unwatchedpages")))
             throw new CredentialNotFoundException("User does not have the \"unwatchedpages\" permission.");
         
-        String url = query + "action=query&list=querypage&qplimit=max&qppage=" + page + "&qpcontinue=";
+        String url = query + "action=query&list=querypage&qplimit=max&qppage=" + page + "&rawcontinue=&qpcontinue=";
         String offset = "";
         List<String> pages = new ArrayList<>(1333);
         
@@ -5611,6 +5624,7 @@ public class Wiki implements Serializable
         url.append("&iwblprop=iwtitle%7Ciwprefix");
 
         String iwblcontinue = "";
+        url.append("&rawcontinue=");
         List<String[]> links = new ArrayList<>(500);
         do
         {
@@ -6687,6 +6701,10 @@ public class Wiki implements Serializable
             if (!temp.matches("code=\"(rvnosuchsection)")) // list "good" errors here
                 throw new UnknownError("MW API error. Server response was: " + temp);
         }
+        if (temp.contains("<warning>"))
+        {
+            log(Level.WARNING, caller, "");
+        }
         return temp;
     }
 
@@ -6724,6 +6742,10 @@ public class Wiki implements Serializable
                 temp.append(line);
                 temp.append("\n");
             }
+        }
+        if (temp.toString().contains("<warning>"))
+        {
+            log(Level.WARNING, caller, "");
         }
         return temp.toString();
     }
@@ -6917,7 +6939,7 @@ public class Wiki implements Serializable
      *  is not present
      *  @since 0.28
      */
-    private String parseAttribute(String xml, String attribute, int index)
+    protected String parseAttribute(String xml, String attribute, int index)
     {
         // let's hope the JVM always inlines this
         if (xml.contains(attribute + "=\""))
@@ -7052,7 +7074,7 @@ public class Wiki implements Serializable
      *  @param start the time at which the write method was entered
      *  @since 0.30
      */
-    private synchronized void throttle(long start)
+    protected synchronized void throttle(long start)
     {
         try
         {
