@@ -56,7 +56,7 @@ public class ParserUtils
     public static String[] parseList(String list)
     {
         StringTokenizer tokenizer = new StringTokenizer(list, "[]");
-        ArrayList<String> titles = new ArrayList<String>(667);
+        ArrayList<String> titles = new ArrayList<>(667);
         tokenizer.nextToken(); // skip the first token
         while (tokenizer.hasMoreTokens())
         {
@@ -93,10 +93,10 @@ public class ParserUtils
     public static String formatList(String[] pages)
     {
         StringBuilder buffer = new StringBuilder(10000);
-        for (int i = 0; i < pages.length; i++)
+        for (String page : pages)
         {
             buffer.append("*[[:");
-            buffer.append(pages[i]);
+            buffer.append(page);
             buffer.append("]]\n");
         }
         return buffer.toString();
@@ -116,30 +116,23 @@ public class ParserUtils
     public static String revisionsToWikitext(Wiki wiki, Wiki.Revision[] revisions)
     {
         StringBuilder buffer = new StringBuilder(revisions.length * 100);
-        buffer.append("<div style=\"font-family: monospace\">\n");
+        buffer.append("<div style=\"font-family: monospace; font-size: 120%\">\n");
         for (Wiki.Revision rev : revisions)
         {
-            // base oldid link
-            StringBuilder base2 = new StringBuilder(50);
-            base2.append("<span class=\"plainlinks\">[");
-            base2.append(wiki.base);
-            base2.append(rev.getPage().replace(' ', '_'));
-            base2.append("&oldid=");
-            base2.append(rev.getRevid());
-            
             // timestamp, link to oldid
             buffer.append("*");
+            buffer.append("[[Special:Permanentlink/");
+            buffer.append(rev.getRevid());
             Calendar timestamp = rev.getTimestamp();
             SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-            buffer.append(base2);
-            buffer.append(" ");
+            buffer.append("|");
             buffer.append(format.format(timestamp.getTime()));
-            buffer.append("]</span> ");
+            buffer.append("]] ");
             
             // diff link
-            buffer.append("(");
-            buffer.append(base2);
-            buffer.append("&diff=prev diff]</span>) ");
+            buffer.append("([[Special:Diff/");
+            buffer.append(rev.getRevid());
+            buffer.append("|diff]]) ");
             
             if (rev.isNew())
                 buffer.append("'''N''' ");
@@ -206,9 +199,17 @@ public class ParserUtils
     public static String revisionsToHTML(Wiki wiki, Wiki.Revision[] revisions)
     {
         StringBuilder buffer = new StringBuilder(100000);
-        buffer.append("<ul style=\"font-family: monospace\">\n");
+        buffer.append("<ul style=\"font-family: monospace; font-size: 120%\">\n");
+        boolean colored = true;
         for (Wiki.Revision rev : revisions)
-        {
+        {         
+            // alternate background color for readability
+            if (colored)
+                buffer.append("<li style=\"background-color: #eeeeee\">(");
+            else
+                buffer.append("<li>(");
+            colored = !colored;
+            
             // diff link
             String page = recode(rev.getPage());
             StringBuilder temp2 = new StringBuilder("<a href=\"");
@@ -216,9 +217,9 @@ public class ParserUtils
             temp2.append(page.replace(' ', '_'));
             temp2.append("&oldid=");
             temp2.append(rev.getRevid());
-            buffer.append("<li>(");
             buffer.append(temp2);
             buffer.append("&diff=prev\">prev</a>) ");
+            
             // date
             buffer.append(temp2);
             buffer.append("\">");
@@ -241,7 +242,7 @@ public class ParserUtils
                 buffer.append(". ");
             
             // pages never contain XSS characters
-            buffer.append("<a href=\"http://");
+            buffer.append("<a href=\"//");
             buffer.append(wiki.getDomain());
             buffer.append("/wiki/");
             buffer.append(page.replace(' ', '_'));
@@ -253,17 +254,17 @@ public class ParserUtils
             String temp = recode(rev.getUser());
             if (temp != null)
             {
-                buffer.append("<a href=\"http://");
+                buffer.append("<a href=\"//");
                 buffer.append(wiki.getDomain());
                 buffer.append("/wiki/User:");
                 buffer.append(temp);
                 buffer.append("\">");
                 buffer.append(temp);
-                buffer.append("</a> (<a href=\"http://");
+                buffer.append("</a> (<a href=\"//");
                 buffer.append(wiki.getDomain());
                 buffer.append("/wiki/User talk:");
                 buffer.append(temp);
-                buffer.append("\">talk</a> | <a href=\"http://");
+                buffer.append("\">talk</a> | <a href=\"//");
                 buffer.append(wiki.getDomain());
                 buffer.append("/wiki/Special:Contributions/");
                 buffer.append(temp);
