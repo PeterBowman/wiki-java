@@ -1,3 +1,23 @@
+/**
+ *  @(#)AdminUnitTest.java 0.31 29/08/2015
+ *  Copyright (C) 2015 MER-C
+ *
+ *  This program is free software; you can redistribute it and/or
+ *  modify it under the terms of the GNU General Public License
+ *  as published by the Free Software Foundation; either version 3
+ *  of the License, or (at your option) any later version. Additionally
+ *  this file is subject to the "Classpath" exception.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software Foundation,
+ *  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ */
+
 package org.wikipedia;
 
 import java.util.*;
@@ -22,6 +42,20 @@ public class AdminUnitTest
         testWiki.setMaxLag(-1);
     }
     
+    /**
+     *  See https://test.wikipedia.org/w/index.php?title=Special%3ALog&page=User%3AMER-C%2FTest.
+     *  @throws Exception if something goes wrong
+     */
+    @Test
+    public void getLogEntries() throws Exception
+    {
+        Wiki.LogEntry[] le = testWiki.getLogEntries("User:MER-C/Test");
+        assertEquals("getLogEntries: RevisionDeleted reason, can access", 
+            "create a log entry for testing RevisionDelete on", le[0].getReason());
+        assertEquals("getLogEntries: RevisionDeleted user, can access", "MER-C", 
+            le[0].getUser().getUsername());
+    }
+    
 
     /**
      *  See https://test.wikipedia.org/wiki/User:MER-C/UnitTests/Delete
@@ -33,16 +67,5 @@ public class AdminUnitTest
         String text = testWiki.getDeletedText("User:MER-C/UnitTests/Delete");
         assertEquals("getDeletedText", text, "This revision is also deleted!");
         assertNull("getDeletedText: page never deleted", testWiki.getDeletedText("Tfs;hojfsdhp;osjfeas;lioejg"));
-    }
-    
-    /**
-     *  See https://test.wikipedia.org/wiki/User:MER-C/UnitTests/Delete
-     *  @throws Exception if something goes wrong
-     */
-    @Test
-    public void RevisionGetText() throws Exception
-    {
-        Wiki.Revision deleted = testWiki.getRevision(217078L);
-        assertEquals(deleted.getText(), "This revision is deleted!");
     }
 }
