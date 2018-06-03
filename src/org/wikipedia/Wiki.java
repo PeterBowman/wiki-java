@@ -419,7 +419,7 @@ public class Wiki implements Serializable
     protected String query, base, apiUrl;
     protected String scriptPath = "/w";
     private boolean wgCapitalLinks = true;
-    private ZoneId timezone = ZoneId.of("UTC");
+    protected ZoneId timezone = ZoneId.of("UTC");
 
     // user management
     private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
