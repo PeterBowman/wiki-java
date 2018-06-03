@@ -6672,10 +6672,14 @@ public class Wiki implements Serializable
             }
             else
             {
-                String url = base + encode(title, true) + "&oldid=" + revid + "&action=raw";
-                String temp = fetch(url, "Revision.getText");
-                log(Level.INFO, "Revision.getText", "Successfully retrieved text of revision " + revid);
-                return temp;
+                try {
+	                String url = base + encode(title, true) + "&oldid=" + revid + "&action=raw";
+	                String temp = fetch(url, "Revision.getText");
+	                log(Level.INFO, "Revision.getText", "Successfully retrieved text of revision " + revid);
+	                return temp;
+                } catch (EOFException e) {
+                    return "";
+                }
             }
         }
 
