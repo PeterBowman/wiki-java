@@ -86,8 +86,9 @@ for more domains.
     {
         out.println("<hr>");
         String[] domains = inputdomains.split("\r\n");
-        Wiki w = new Wiki(wiki);
+        Wiki w = Wiki.createInstance(wiki);
         w.setMaxLag(-1);
+        w.setQueryLimit(500);
 
         StringBuilder regex = new StringBuilder();
         StringBuilder linksummary = new StringBuilder();
@@ -97,12 +98,11 @@ for more domains.
             domain = domain.trim();
             
             // compute results
-            List[] temp = w.linksearch("*." + domain, "http");
+            List<String[]> temp = w.linksearch("*." + domain, "http");
             if (https)
             {
-                List[] temp2 = w.linksearch("*." + domain, "https");
-                temp[0].addAll(temp2[0]);
-                temp[1].addAll(temp2[1]);
+                List<String[]> temp2 = w.linksearch("*." + domain, "https");
+                temp.addAll(temp2);
             }
 
             // reformat domain list to regex and linksummary

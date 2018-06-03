@@ -69,15 +69,19 @@ is performed on IP addresses. Timeouts are more likely for longer time spans.
             out.println("<span class=\"error\">ERROR: search key of insufficient length.</span>");
         else
         {
-            Wiki enWiki = new Wiki("en.wikipedia.org");
+            Wiki enWiki = Wiki.createInstance("en.wikipedia.org");
             enWiki.setMaxLag(-1);
-            Calendar cutoff = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
-            cutoff.add(Calendar.DAY_OF_MONTH, -1 * time);
-            Wiki.Revision[] revisions = enWiki.contribs("", prefix, cutoff, null);
+            enWiki.setQueryLimit(1000);
+            OffsetDateTime cutoff = OffsetDateTime.now(ZoneOffset.UTC).minusDays(time);
+            Wiki.Revision[] revisions = enWiki.prefixContribs(prefix, cutoff, null);
             if (revisions.length == 0)
                 out.println("<p>\nNo contributions found.");
             else
                 out.println(ParserUtils.revisionsToHTML(enWiki, revisions));
+            if (revisions.length == 1000)
+                out.println("<p>\nAt least 1000 contributions found.");
+            else
+                out.println("<p>\n" + revisions.length + " contributions found.");
         }
     }
 %>

@@ -30,11 +30,11 @@ public class WikiTests
 {
     public static void main(String[] args) throws Exception
     {
-        Wiki enWiki = new Wiki("en.wikipedia.org");
+        Wiki enWiki = Wiki.createInstance("en.wikipedia.org");
         enWiki.setMaxLag(-1);
-        Wiki deWiki = new Wiki("de.wikipedia.org");
+        Wiki deWiki = Wiki.createInstance("de.wikipedia.org");
         deWiki.setMaxLag(-1);
-        Wiki testWiki = new Wiki("test.wikipedia.org");
+        Wiki testWiki = Wiki.createInstance("test.wikipedia.org");
         testWiki.setMaxLag(-1);
 
         /*
@@ -101,7 +101,7 @@ public class WikiTests
         for (String image : enWiki.getImagesOnPage("Main Page"))
             System.out.println(image);
         // This site runs an obsolete MW where "File:" doesn't exist
-        for (String image : new Wiki("wiki.eclipse.org", "").getImagesOnPage("Main Page"))
+        for (String image : Wiki.createInstance("wiki.eclipse.org", "").getImagesOnPage("Main Page"))
             System.out.println(image);
 
         // getImage()
@@ -181,12 +181,12 @@ public class WikiTests
         // interwikis
         for (Map.Entry entry : enWiki.getInterWikiLinks("Main Page").entrySet())
             System.out.println("[[:" + entry.getKey() + ":" + entry.getValue() + "]]");
-            
+*/            
         // linksearch
-        List[] blah4 = enWiki.linksearch("bom.gov.au");
-        for (int i = 0; i < blah4[0].size(); i++)
-            System.out.println(blah4[0].get(i) + " --- " + blah4[1].get(i));
-
+        List<String[]> blah4 = enWiki.linksearch("*.docs.oracle.com");
+        for (String[] result : blah4)
+            System.out.println(result[0] + " --- " + result[1]);
+/*
 
         // getOldImage/image history
         Wiki.LogEntry[] entries = enWiki.getImageHistory("File:Bohemian Rhapsody.png");
@@ -240,8 +240,6 @@ public class WikiTests
         for (Wiki.Revision rev : enWiki.rangeContribs("::/96"))
             System.out.println(rev);
                 
-        */
-        
         String[] pages = { "Main Page", "Test", "Wikipedia:Articles for deletion/Log/2016 September 24" };
         List<String>[] templates = enWiki.getTemplates(pages);
         for (int i = 0; i < templates.length; i++)
@@ -249,6 +247,6 @@ public class WikiTests
             System.out.println(pages[i] + ": ");
             System.out.println(templates[i]);
         }
-        
+        */
     }
 }

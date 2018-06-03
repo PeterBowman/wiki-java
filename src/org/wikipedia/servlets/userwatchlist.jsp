@@ -100,7 +100,7 @@ Someone # Spam
         <%
         return;
     }
-    Wiki enWiki = new Wiki("en.wikipedia.org");
+    Wiki enWiki = Wiki.createInstance("en.wikipedia.org");
     enWiki.setMaxLag(-1);
     String us = inputpage.substring(5, inputpage.indexOf('/'));
     Wiki.User us2 = enWiki.getUser(us);
@@ -170,28 +170,20 @@ Someone # Spam
     {
         String user = entry.getKey();
         String reason = ServletUtils.sanitizeForHTML(entry.getValue());
-        String userenc = ServletUtils.sanitizeForURL(user);
-
         // user links
         %>
 <h3><%= user %></h3>
 <p>
 <ul>
-    <li><a href="//en.wikipedia.org/wiki/User:<%= userenc %>"><%= user %></a> | 
-        <a href="//en.wikipedia.org/wiki/User_talk:<%= userenc %>">talk</a> | 
-        <a href="//en.wikipedia.org/wiki/Special:Contributions/<%= userenc %>">contribs</a> | 
-        <a href="//en.wikipedia.org/wiki/Special:DeletedContributions/<%= userenc %>">deleted contribs</a> | 
-        <a href="//en.wikipedia.org/wiki/Special:Block/<%= userenc %>">block</a> | 
-        <a href="//en.wikipedia.org/w/index.php?title=Special:Log&type=block&page=User:<%= userenc %>">block log</a>
-
+    <li>
         <%
+        out.println(ParserUtils.generateUserLinks(enWiki, user));
         if (!reason.isEmpty())
             out.println("<li><i>" + reason + "</i>");
         out.println("</ul>");
 
         // fetch and output contribs
-        Calendar cutoff = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
-        cutoff.add(Calendar.DAY_OF_MONTH, -5);
+        OffsetDateTime cutoff = OffsetDateTime.now(ZoneOffset.UTC).minusDays(5);
         Wiki.Revision[] contribs = enWiki.contribs(user, "", cutoff, null);
         if (contribs.length == 0)
             out.println("<p>No recent contributions or user does not exist.");
