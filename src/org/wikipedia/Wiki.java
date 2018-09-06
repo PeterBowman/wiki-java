@@ -419,7 +419,7 @@ public class Wiki implements Serializable
     protected String query, base, apiUrl;
     protected String scriptPath = "/w";
     private boolean wgCapitalLinks = true;
-    protected ZoneId timezone = ZoneId.of("UTC");
+    private ZoneId timezone = ZoneId.of("UTC");
 
     // user management
     private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
@@ -719,6 +719,17 @@ public class Wiki implements Serializable
         initVars();
         log(Level.INFO, "getSiteInfo", "Successfully retrieved site info for " + getDomain());
         return ret;
+    }
+
+    /**
+     *  Gets the timezone of this wiki
+     *  @throws UncheckedIOException if the site info cache has not been 
+     *  populated and a network error occurred when populating it
+     */
+    public ZoneId timezone()
+    {
+        ensureNamespaceCache();
+        return timezone;
     }
 
     /**
