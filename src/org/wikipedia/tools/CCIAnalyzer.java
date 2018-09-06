@@ -20,10 +20,12 @@
 package org.wikipedia.tools;
 
 import java.io.*;
+import java.nio.file.Files;
 import java.util.*;
-import java.net.*;
-import java.util.zip.*;
+import java.util.logging.*;
+import java.util.regex.Pattern;
 import javax.swing.JFileChooser;
+import org.wikipedia.ParserUtils;
 import org.wikipedia.Wiki;
 
 /**
@@ -33,6 +35,8 @@ import org.wikipedia.Wiki;
  */
 public class CCIAnalyzer
 {
+    private static Wiki enWiki = Wiki.createInstance("en.wikipedia.org");
+    
     /**
      *  Runs this program.
      *  @param args the command line arguments
@@ -41,18 +45,16 @@ public class CCIAnalyzer
      */
     public static void main(String[] args) throws IOException
     {
-        Wiki enWiki = Wiki.createInstance("en.wikipedia.org");
-        StringBuilder cci;
+        enWiki.setLogLevel(Level.WARNING);
+        StringBuilder cci = new StringBuilder(1000000);
         if (args.length < 1)
         {
             // read in from file
             JFileChooser fc = new JFileChooser();
             if (fc.showOpenDialog(null) != JFileChooser.APPROVE_OPTION)
                 System.exit(0);      
-            BufferedReader in = new BufferedReader(new FileReader(fc.getSelectedFile()));
-            String line;
-            cci = new StringBuilder();
-            while ((line = in.readLine()) != null)
+            List<String> lines = Files.readAllLines(fc.getSelectedFile().toPath());
+            for (String line : lines)
             {
                 cci.append(line);
                 cci.append("\n");
@@ -60,18 +62,18 @@ public class CCIAnalyzer
         }
         else
             // or read in from supplied wiki page
-            cci = new StringBuilder(enWiki.getPageText(args[0]));
+            cci.append(enWiki.getPageText(args[0]));
         
         // some HTML strings we are looking for
-        // see https://en.wikipedia.org/w/api.php?action=query&prop=revisions&revids=77350972&rvdiffto=prev
-        String diffaddedbegin = "&lt;td class=&quot;diff-addedline&quot;&gt;"; // <td class="diff-addedline">
-        String diffaddedend = "&lt;/td&gt;"; // </td>
-        String deltabegin = "&lt;ins class=&quot;diffchange diffchange-inline&quot;&gt;"; // <ins class="diffchange diffchange-inline">
-        String deltaend = "&lt;/ins&gt;"; // </ins>
+        // see https://en.wikipedia.org/w/api.php?action=compare&fromrev=77350972&torelative=prev
+        String diffaddedbegin = "<td class=\"diff-addedline\">";
+        String diffaddedend = "</td>";
+        String deltabegin = "<ins class=\"diffchange diffchange-inline\">";
+        String deltaend = "</ins>";
         
         // count number of diffs
         int count = 0;
-        for (int i = cci.indexOf("{{dif|"); i >= 0; i = cci.indexOf("{{dif|", ++i))
+        for (int i = cci.indexOf("[[Special:Diff/"); i >= 0; i = cci.indexOf("[[Special:Diff/", ++i))
             count++;
         
         // parse the list of diffs
@@ -79,21 +81,24 @@ public class CCIAnalyzer
         long start = System.currentTimeMillis();
         ArrayList<String> minoredits = new ArrayList<>(500);
         boolean exception = false;
-        for (int i = cci.indexOf("{{dif|"); i >= 0; i = cci.indexOf("{{dif|", ++i))
+        for (int i = cci.indexOf("[[Special:Diff/"); i >= 0; i = cci.indexOf("[[Special:Diff/", ++i))
         {
-            int x = cci.indexOf("}}", i);
-            String edit = cci.substring(i, x + 2);
-            x = edit.indexOf("|");
-            int y = edit.indexOf("|", x + 1);
-            String oldid = edit.substring(x + 1, y);
+            int xx = cci.indexOf("/", i);
+            int yy = cci.indexOf("|", xx);
+            int zz = cci.indexOf("]]", xx) + 2;
+            String edit = cci.substring(i, zz);
+            long oldid = Long.parseLong(cci.substring(xx + 1, yy));
 
             // Fetch diff. No plain text diffs for performance reasons, see
             // https://phabricator.wikimedia.org/T15209
-            // We don't use the Wiki.java method here, this avoids an extra query.
             String diff = "";
             try 
             {
-                diff = fetch("https://en.wikipedia.org/w/api.php?format=xml&action=query&prop=revisions&rvdiffto=prev&revids=" + oldid);
+                Map<String, Object> from = new HashMap<>();
+                from.put("revid", oldid);
+                Map<String, Object> to = new HashMap<>();
+                to.put("revid", Wiki.PREVIOUS_REVISION);
+                diff = enWiki.diff(from, -1, to, -1);
                 exception = false;
             }
             catch (IOException ex)
@@ -112,6 +117,11 @@ public class CCIAnalyzer
                 exception = true;
                 continue;
             }
+            catch (UnknownError err)
+            {
+                // HACK: RevisionDeleted revision or deleted article.
+                continue;
+            }
             // Condense deltas to avoid problems like https://en.wikipedia.org/w/index.php?title=&diff=prev&oldid=486611734
             diff = diff.toLowerCase();
             diff = diff.replace(deltaend + " " + deltabegin, " ");
@@ -123,8 +133,8 @@ public class CCIAnalyzer
             {
                 int y2 = diff.indexOf(diffaddedend, j);
                 String addedline = diff.substring(j + diffaddedbegin.length(), y2);
-                addedline = addedline.replaceFirst("^&lt;div&gt;", "");
-                addedline = addedline.replace("&lt;/div&gt;", "");
+                addedline = addedline.replaceFirst("^<div>", "");
+                addedline = addedline.replace("</div>;", "");
                 if (addedline.contains(deltabegin))
                 {
                     for (int k = addedline.indexOf(deltabegin); k >= 0; k = addedline.indexOf(deltabegin, k))
@@ -162,9 +172,9 @@ public class CCIAnalyzer
             cci.delete(x, x + minoredit.length());
             
             // we don't care about minor edits that add less than 500 chars
-            int y = minoredit.indexOf("|");
-            y = minoredit.indexOf("|", y + 1);
-            int size = Integer.parseInt(minoredit.substring(y + 2, minoredit.length() - 3));
+            int yy = minoredit.indexOf('|') + 2;
+            int zz = minoredit.indexOf(")]]");
+            int size = Integer.parseInt(minoredit.substring(yy, zz));
             if (size > 499)
                 System.out.println(minoredit);
         }
@@ -173,16 +183,23 @@ public class CCIAnalyzer
         // clean up output CCI listing
         String[] articles = cci.toString().split("\\n");
         StringBuilder cleaned = new StringBuilder();
+        int removedarticles = 0;
+        Pattern pattern = Pattern.compile(".*edits?\\):\\s+");
         for (String article : articles)
         {
             // remove articles where all diffs are trivial
-            if (article.contains("''''''") && !article.contains("{{dif|"))
+            if (pattern.matcher(article).matches())
+            {
+                removedarticles++;
                 continue;
-            // strip any left-over bold/unbold markers
-            cleaned.append(article.replaceAll("''''''", ""));
+            }
+            cleaned.append(article);
             cleaned.append("\n");
         }
         System.out.println(cleaned);
+        System.out.println("----------------------");
+        System.out.println("Diffs removed: " + minoredits.size() + " of " + count 
+            + ", articles removed: " + removedarticles);
     }
     
     /**
@@ -210,19 +227,22 @@ public class CCIAnalyzer
         if (delta.contains("{{infobox "))
             return false;
         
-        // remove wikilinks and files
+        // replace wikilinks, categories and files with their descriptions
         StringBuilder temp = new StringBuilder(delta);
-        for (int i = temp.indexOf("[["); i > 0; i = temp.indexOf("[["))
+        for (int i = temp.indexOf("[["); i >= 0; i = temp.indexOf("[["))
         {
             int j = temp.indexOf("]]", i);
             if (j < 0) // unbalanced brackets
                 break;
-            int k = temp.indexOf("|", i);
-            temp.delete(j, j + 2); // ]] => empty string
-            if (k < j && k > 0)
-                temp.delete(i, k + 1); // [[Blah de blah| => empty string
+            List<String> parsedlink = ParserUtils.parseWikilink(temp.substring(i, j + 2));
+            if (parsedlink.get(0).length() > 100)
+                // something has gone wrong here
+                break;
+            else if (enWiki.namespace(parsedlink.get(0)) == Wiki.CATEGORY_NAMESPACE)
+                // I'm not interested in the category sortkey
+                temp.delete(i, j + 2);
             else
-                temp.delete(i, i + 2); // [[ => empty string
+                temp.replace(i, j + 2, parsedlink.get(1));
         }
         
         // decode() the delta
@@ -238,35 +258,5 @@ public class CCIAnalyzer
                 return true;
         }
         return false;
-    }
-    
-    private static String fetch(String url) throws IOException
-    {
-        // connect
-        URLConnection connection = new URL(url).openConnection();
-        connection.setConnectTimeout(60000);
-        connection.setReadTimeout(60000);
-        connection.setRequestProperty("Accept-encoding", "gzip");
-        connection.connect();
-
-        // get the text
-        StringBuilder text = new StringBuilder(100000);
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(
-            new GZIPInputStream(connection.getInputStream()))))
-        {
-            String line;
-            while ((line = in.readLine()) != null)
-            {
-                text.append(line);
-                text.append("\n");
-            }
-        }
-        String temp = text.toString();
-        if (temp.contains("<error code="))
-            // Something *really* bad happened. Most of these are self-explanatory
-            // and are indicative of bugs (not necessarily in this framework) or 
-            // can be avoided entirely.
-            throw new UnknownError("MW API error. Server response was: " + temp);
-        return temp;
     }
 }

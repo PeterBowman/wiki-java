@@ -2,23 +2,13 @@
     @(#)masslinksearch.jsp 0.01 20/01/2017
     Copyright (C) 2016 - 2017 MER-C
   
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Affero General Public License as
-    published by the Free Software Foundation, either version 3 of the
-    License, or (at your option) any later version.
-  
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU Affero General Public License for more details.
-
-    You should have received a copy of the GNU Affero General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+    This is free software: you are free to change and redistribute it under the 
+    Affero GNU GPL version 3 or later, see <https://www.gnu.org/licenses/agpl.html> 
+    for details. There is NO WARRANTY, to the extent permitted by law.
 -->
 
 <%@ include file="header.jsp" %>
-<%@ page contentType="text/html" pageEncoding="UTF-8" 
-    trimDirectiveWhitespaces="true"%>
+<%@ page contentType="text/html" pageEncoding="UTF-8" trimDirectiveWhitespaces="true"%>
 
 <%
     request.setAttribute("toolname", "Mass linksearch");
@@ -26,10 +16,7 @@
     boolean https = (request.getParameter("https") != null);
 
     String wiki = request.getParameter("wiki");
-    if (wiki == null)
-        wiki = "";
-    else
-        wiki = ServletUtils.sanitizeForAttribute(wiki);
+    wiki = (wiki == null) ? "" : ServletUtils.sanitizeForAttribute(wiki);
 
     // parse inputdomains to pure list of domains
     String inputdomains = request.getParameter("domains");
@@ -92,6 +79,7 @@ for more domains.
 
         StringBuilder regex = new StringBuilder();
         StringBuilder linksummary = new StringBuilder();
+        ExternalLinks el = ExternalLinks.of(w);
 
         for (String domain : domains)
         {
@@ -114,7 +102,7 @@ for more domains.
             linksummary.append("}}\n");
 
             out.println("<h3>Results for " + domain + "</h3>");
-            out.println(ParserUtils.linksearchResultsToHTML(temp, w, domain));
+            out.println(el.linksearchResultsToHTML(temp, domain));
         }
 %>
 <hr>

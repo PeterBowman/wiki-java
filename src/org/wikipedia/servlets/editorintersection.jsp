@@ -2,42 +2,26 @@
     @(#)editorintersection.jsp 0.01 05/10/2017
     Copyright (C) 2017 MER-C
   
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Affero General Public License as
-    published by the Free Software Foundation, either version 3 of the
-    License, or (at your option) any later version.
-  
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU Affero General Public License for more details.
-
-    You should have received a copy of the GNU Affero General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+    This is free software: you are free to change and redistribute it under the 
+    Affero GNU GPL version 3 or later, see <https://www.gnu.org/licenses/agpl.html> 
+    for details. There is NO WARRANTY, to the extent permitted by law.
 -->
 
 <%@ include file="header.jsp" %>
-<%@ page contentType="text/html" pageEncoding="UTF-8" 
-    trimDirectiveWhitespaces="true" %>
+<%@ page contentType="text/html" pageEncoding="UTF-8" trimDirectiveWhitespaces="true" %>
 
 <%
-    request.setAttribute("toolname", "Article/editor intersection (beta)");
+    request.setAttribute("toolname", "Article/editor intersection");
 
     String wikiparam = request.getParameter("wiki");
-    if (wikiparam == null)
-        wikiparam = "en.wikipedia.org";
-    else
-        wikiparam = ServletUtils.sanitizeForAttribute(wikiparam);
+    wikiparam = (wikiparam == null) ? "en.wikipedia.org" : ServletUtils.sanitizeForAttribute(wikiparam);
 
     String mode = request.getParameter("mode");
     if (mode == null)
         mode = "pages";
 
     String pages = request.getParameter("pages");
-    if (pages == null)
-        pages = "";
-    else
-        pages = ServletUtils.sanitizeForHTML(pages);
+    pages = (pages == null) ? "" : ServletUtils.sanitizeForHTML(pages);
 
     String category = request.getParameter("category");
     if (category != null)
@@ -47,10 +31,23 @@
     if (user != null)
         user = ServletUtils.sanitizeForAttribute(user);
 
+    String earliest = request.getParameter("earliest");
+    OffsetDateTime earliestdate = null;
+    earliest = (earliest == null) ? "" : ServletUtils.sanitizeForAttribute(earliest);
+    if (!earliest.isEmpty())
+        earliestdate = OffsetDateTime.parse(earliest + "T00:00:00Z");
+    
+    String latest = request.getParameter("latest");
+    OffsetDateTime latestdate = null;
+    latest = (latest == null) ? "" : ServletUtils.sanitizeForAttribute(latest);
+    if (!latest.isEmpty())
+        latestdate = OffsetDateTime.parse(latest + "T23:59:59Z");
+    
     boolean noadmin = (request.getParameter("noadmin") != null);
     boolean nobot = (request.getParameter("nobot") != null);
     boolean noanon = (request.getParameter("noanon") != null);
     boolean nominor = (request.getParameter("nominor") != null);
+    boolean noreverts = (request.getParameter("noreverts") != null);
 %>
 
 <!doctype html>
@@ -94,12 +91,27 @@ first in the GUI) apply.
         <input type=checkbox name=nobot value=1<%= (pages.isEmpty() || nobot) ? " checked" : "" %>>bots</input>
         <input type=checkbox name=noanon value=1<%= noanon ? " checked" : "" %>>IPs</input>
         <input type=checkbox name=nominor value=1<%= nominor ? " checked" : "" %>>minor edits</input>
+        <input type=checkbox name=noreverts value=1<%= noreverts ? " checked" : "" %>>reverts</input>
+<tr>
+    <td colspan=2>Show changes from:
+    <td><input type=date name=earliest value="<%= earliest %>"></input> to 
+        <input type=date name=latest value="<%= latest %>"></input> (inclusive)
 </table>
 <br>
 <input type=submit value=Search>
 </form>
 
 <%
+    if (earliestdate != null && latestdate != null && earliestdate.isAfter(latestdate))
+    {
+%>
+    <hr>
+    <span class="error">Earliest date is after latest date!</span>
+<%@ include file="footer.jsp" %>
+<%
+        return;
+    }
+
     Wiki wiki = Wiki.createInstance(wikiparam);
     wiki.setMaxLag(-1);
     wiki.setQueryLimit(1500);
@@ -126,7 +138,11 @@ first in the GUI) apply.
         pagestream = Arrays.stream(pages.split("\r\n")).map(String::trim);
     }
     out.println("<hr>");
-    String[] pagesarray = pagestream.distinct().limit(25).toArray(String[]::new);
+    String[] pagesarray = pagestream
+        .distinct()
+        .filter(title -> wiki.namespace(title) >= 0)
+        .limit(25)
+        .toArray(String[]::new);
     if (pagesarray.length < 2)
     {
 %>
@@ -137,6 +153,11 @@ first in the GUI) apply.
     }
     ArticleEditorIntersector aei = new ArticleEditorIntersector(wiki);
     aei.setIgnoringMinorEdits(nominor);
+    aei.setIgnoringReverts(noreverts);
+    if (!earliest.isEmpty())
+        aei.setEarliestDateTime(earliestdate);
+    if (!latest.isEmpty())
+        aei.setLatestDateTime(latestdate);
     Map<String, List<Wiki.Revision>> results = aei.intersectArticles(pagesarray, noadmin, nobot, noanon);
     if (results.isEmpty())
     {
@@ -154,45 +175,38 @@ first in the GUI) apply.
             .collect(Collectors.groupingBy(Wiki.Revision::getPage));
         bypage.put(key, grouppage);
     });
-    String blah = bypage.entrySet().stream().sorted((entry1, entry2) -> 
-    {
-        // sort by number of articles hit
-        return entry2.getValue().size() - entry1.getValue().size();
-
-    }).map(entry ->
-    {
-        // generate HTML
-        StringBuilder sb = new StringBuilder();
-        sb.append("<h2>");
-        sb.append(entry.getKey());
-        sb.append("</h2>\n");
-        sb.append(ParserUtils.generateUserLinks(wiki, entry.getKey()));
-
-        for (Map.Entry<String, List<Wiki.Revision>> entry2 : entry.getValue().entrySet())
+    Pages pageUtils = Pages.of(wiki);
+    String blah = bypage.entrySet().stream()
+        .sorted((entry1, entry2) -> 
         {
-            List<Wiki.Revision> revs = entry2.getValue();
-            StringBuilder title = new StringBuilder("<a href=\"//");
-            title.append(wiki.getDomain());
-            title.append("/wiki/");
-            title.append(entry2.getKey());
-            title.append("\">");
-            title.append(entry2.getKey());
-            title.append("</a> (<a href=\"//");
-            title.append(wiki.getDomain());
-            title.append("/w/index.php?title=");
-            title.append(entry2.getKey());
-            title.append("&action=history\">history</a>) &ndash; ");
-            title.append(revs.size());
-            title.append(" edit");
-            if (revs.size() > 1)
-                title.append("s");
-            sb.append("<p>\n");
-            sb.append(ServletUtils.beginCollapsibleSection(title.toString(), true));
-            sb.append(ParserUtils.revisionsToHTML(wiki, revs.toArray(new Wiki.Revision[revs.size()])));
-            sb.append(ServletUtils.endCollapsibleSection());
-        }
-        return sb;
-    }).collect(Collectors.joining());
+            // sort by number of articles hit
+            return entry2.getValue().size() - entry1.getValue().size();
+        }).map(entry ->
+        {
+            // generate HTML
+            StringBuilder sb = new StringBuilder();
+            sb.append("<h2>");
+            sb.append(entry.getKey());
+            sb.append("</h2>\n");
+            sb.append(ParserUtils.generateUserLinks(wiki, entry.getKey()));
+
+            for (Map.Entry<String, List<Wiki.Revision>> entry2 : entry.getValue().entrySet())
+            {
+                String thisPage = entry2.getKey();
+                List<Wiki.Revision> revs = entry2.getValue();
+                StringBuilder title = new StringBuilder(pageUtils.generateSummaryLinks(thisPage));
+                title.append(" &ndash; ");
+                title.append(revs.size());
+                title.append(" edit");
+                if (revs.size() > 1)
+                    title.append("s");
+                sb.append("<p>\n");
+                sb.append(ServletUtils.beginCollapsibleSection(title.toString(), true));
+                sb.append(ParserUtils.revisionsToHTML(wiki, revs.toArray(new Wiki.Revision[revs.size()])));
+                sb.append(ServletUtils.endCollapsibleSection());
+            }
+            return sb;
+        }).collect(Collectors.joining());
     out.println(blah);
 %>
 <%@ include file="footer.jsp" %>

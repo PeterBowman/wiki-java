@@ -25,6 +25,7 @@ import java.util.regex.*;
 import java.nio.charset.Charset;
 import java.nio.file.*;
 import java.time.OffsetDateTime;
+import java.util.stream.Collectors;
 import javax.swing.JFileChooser;
 import org.wikipedia.*;
 
@@ -35,149 +36,166 @@ import org.wikipedia.*;
  */
 public class UserLinkAdditionFinder
 {
+    private static int threshold = 50;
+    private static WMFWiki wiki = WMFWiki.createInstance("en.wikipedia.org");
+
     /**
      *  Runs this program.
-     *  @param args the command line arguments (see "--help" below)
+     *  @param args the command line arguments (see code for documentation)
      *  @throws IOException if a network error occurs
      */
     public static void main(String[] args) throws IOException
     {
-        WMFWiki enWiki = WMFWiki.createInstance("en.wikipedia.org");
-        enWiki.setQueryLimit(500);
-        
         // parse command line args
-        boolean linksearch = false, removeblacklisted = false;
-        String filename = null;
-        String datestring = null;
-        for (int i = 0; i < args.length; i++)
-        {
-            switch (args[i])
-            {
-                case "--help":
-                    System.out.println("SYNOPSIS:\n\t java org.wikipedia.tools.UserLinkAdditionFinder [options] [file]\n\n"
-                        + "DESCRIPTION:\n\tFinds the set of links added by a list of users.\n\n"
-                        + "\t--help\n\t\tPrints this screen and exits.\n"
-                        + "\t--linksearch\n\t\tConduct a linksearch to filter commonly used links.\n"
-                        + "\t--fetchafter\n\t\tFetch only edits after this date.\n"
-                        + "If a file is not specified, a dialog box will prompt for one.");
-                    System.exit(0);
-                case "--linksearch":
-                    linksearch = true;
-                    break;
-                case "--removeblacklisted":
-                    removeblacklisted = true;
-                    break;
-                case "--fetchafter":
-                    datestring = args[++i];
-                    break;
-                default:
-                    filename = args[i];
-                    break;
-            }
-        }
-        final OffsetDateTime date = datestring == null ? null : OffsetDateTime.parse(datestring);
-        
+        Map<String, String> parsedargs = new CommandLineParser()
+            .synopsis("org.wikipedia.tools.UserLinkAdditionFinder", "[options] [file]")
+            .description("Finds the set of links added by a list of users.")
+            .addHelp()
+            .addVersion("UserLinkAdditionFinder v0.02\n" + CommandLineParser.GPL_VERSION_STRING)
+            .addSingleArgumentFlag("--user", "user", "Get links for this user only.")
+            .addBooleanFlag("--linksearch", "Conduct a linksearch to count links and filter commonly used domains.")
+            .addBooleanFlag("--removeblacklisted", "Remove blacklisted links")
+            .addSingleArgumentFlag("--fetchafter", "date", "Fetch only edits after this date.")
+            .addSection("If a file is not specified, a dialog box will prompt for one.")
+            .parse(args);
+
+        boolean linksearch = parsedargs.containsKey("--linksearch");
+        boolean removeblacklisted = parsedargs.containsKey("--removeblacklisted");
+        String user = parsedargs.get("--user");
+        String datestring = parsedargs.get("--fetchafter");
+        String filename = parsedargs.get("default");
+        OffsetDateTime date = datestring == null ? null : OffsetDateTime.parse(datestring);
+
         // read in from file
-        Path fp = null;
-        if (filename == null)
+        List<String> users;
+        if (user == null)
         {
-            JFileChooser fc = new JFileChooser();
-            if (fc.showOpenDialog(null) != JFileChooser.APPROVE_OPTION)
-                System.exit(0);
-            fp = fc.getSelectedFile().toPath();
+            Path fp = null;
+            if (filename == null)
+            {
+                JFileChooser fc = new JFileChooser();
+                if (fc.showOpenDialog(null) != JFileChooser.APPROVE_OPTION)
+                    System.exit(0);
+                fp = fc.getSelectedFile().toPath();
+            }
+            else
+                fp = Paths.get(filename);
+            users = Files.readAllLines(fp, Charset.forName("UTF-8"));
         }
         else
-            fp = Paths.get(filename);
-        
+            users = Arrays.asList(user);
+
         // fetch and parse edits
-        Map<Wiki.Revision, List<String>> results = new HashMap<>();
-        List<String> lines = Files.readAllLines(fp, Charset.forName("UTF-8"));
-        List<Wiki.Revision>[] revisions = enWiki.contribs(lines.toArray(new String[0]), "", null, null, Wiki.MAIN_NAMESPACE);
-        Arrays.stream(revisions).flatMap(List::stream).forEach(revision -> 
-        {
-            try
-            {
-                // remove all sets { revision, links... } where no links are added
-                Map<Wiki.Revision, List<String>> temp = parseDiff(revision);
-                if (!temp.get(revision).isEmpty())
-                    results.putAll(temp);
-            }
-            catch (IOException ex)
-            {
-            }
-        });
+        Map<Wiki.Revision, List<String>> results = getLinksAdded(users, date);
         if (results.isEmpty())
         {
             System.out.println("No links found.");
             System.exit(0);
         }
-        
+
+        // then transform to a map with domain -> spammers and domain -> link count
+        Map<String, Set<String>> domains = new HashMap<>();
+        Map<String, Integer> linkcounts = new HashMap<>();
+        wiki.setQueryLimit(threshold);
+        Iterator<Map.Entry<Wiki.Revision, List<String>>> iter = results.entrySet().iterator();
+        while (iter.hasNext())
+        {
+            Map.Entry<Wiki.Revision, List<String>> entry = iter.next();
+            Wiki.Revision revision = entry.getKey();
+            Iterator<String> links = entry.getValue().iterator();
+            while (links.hasNext())
+            {
+                String link = links.next();
+                String domain = ExternalLinks.extractDomain(link);
+                // remove any dodgy links and any blacklisted links if asked for
+                if (domain == null
+                    || (removeblacklisted && wiki.isSpamBlacklisted(domain)))
+                {
+                    links.remove();
+                    continue;
+                }
+                if (domains.containsKey(domain))
+                {
+                    domains.get(domain).add(revision.getUser());
+                    continue;
+                }
+                // remove any frequently used domains if asked for
+                if (linksearch)
+                {
+                    int linkcount = wiki.linksearch("*." + domain).size();
+                    if (linkcount < threshold)
+                        linkcount += wiki.linksearch("*." + domain, "https").size();
+                    if (linkcount >= threshold)
+                    {
+                        links.remove();
+                        continue;
+                    }
+                    linkcounts.put(domain, linkcount);
+                }
+
+                HashSet<String> blah = new HashSet<>();
+                blah.add(revision.getUser());
+                domains.put(domain, blah);
+            }
+        }
+        wiki.setQueryLimit(Integer.MAX_VALUE);
+
+        // check whether the links are still there
+        Map<String, List<String>> resultsbypage = new HashMap<>();
+        results.forEach((revision, listoflinks) ->
+        {
+            String page = revision.getTitle();
+            List<String> list = resultsbypage.get(page);
+            if (list == null)
+            {
+                list = new ArrayList<>();
+                resultsbypage.put(page, list);
+            }
+            list.addAll(listoflinks);
+        });
+        Map<String, Map<String, Boolean>> stillthere = Pages.of(wiki).containExternalLinks(resultsbypage);
+
         // transform to wikitable
         System.out.println("{| class=\"wikitable\"\n");
         results.forEach((revision, links) ->
         {
+            if (links.isEmpty())
+                return;
+            Map<String, Boolean> revlinkexists = stillthere.get(revision.getTitle());
             StringBuilder temp = new StringBuilder("|-\n|| [[Special:Diff/");
-            temp.append(revision.getRevid());
-            temp.append("]]\n|| ");
+            temp.append(revision.getID());
+            temp.append("]]\n||\n");
             for (int i = 0; i < links.size(); i++)
             {
-                temp.append(links.get(i));
+                String link = links.get(i);
+                temp.append("* ");
+                temp.append(link);
+                boolean remaining = revlinkexists.get(link);
+                temp.append(remaining ? " ('''STILL THERE'''" : " (removed");
+                if (linksearch)
+                {
+                    String domain = ExternalLinks.extractDomain(link);
+                    temp.append("; ");
+                    temp.append(linkcounts.get(domain));
+                    temp.append(" links: [[Special:Linksearch/*.");
+                    temp.append(domain);
+                    temp.append("|http]], [[Special:Linksearch/https://*.");
+                    temp.append(domain);
+                    temp.append("|https]])");
+                }
+                else
+                    temp.append(")");
                 temp.append("\n");
             }
             System.out.println(temp.toString());
         });
         System.out.println("|}");
-        
-        // then transform to a map with domain -> spammers
-        Map<String, Set<String>> domains = new HashMap<>();
-        results.forEach((revision, links) ->
-        {
-            for (int i = 0; i < links.size(); i++)
-            {
-                String link = links.get(i);
-                // get domain name
-                String[] temp2 = link.split("/");
-                String domain = temp2[2].replace("www.", "");
-                if (domains.containsKey(domain))
-                    domains.get(domain).add(revision.getUser());
-                else
-                {
-                    HashSet<String> blah = new HashSet<>();
-                    blah.add(revision.getUser());
-                    domains.put(domain, blah);
-                }
-            }
-        });
-        // remove blacklisted domains (if applicable)
-        if (removeblacklisted)
-        {
-            Iterator<Map.Entry<String, Set<String>>> iter = domains.entrySet().iterator();
-            while (iter.hasNext())
-            {
-                Map.Entry<String, Set<String>> entry = iter.next();
-                if (enWiki.isSpamBlacklisted(entry.getKey()))
-                    iter.remove();
-            }
-        }
-        // perform a linksearch to remove frequently used domains
-        if (linksearch)
-        {
-            Iterator<Map.Entry<String, Set<String>>> iter = domains.entrySet().iterator();
-            while (iter.hasNext())
-            {
-                Map.Entry<String, Set<String>> entry = iter.next();
-                int linkcount = enWiki.linksearch("*." + entry.getKey()).size()
-                    + enWiki.linksearch("*." + entry.getKey(), "https").size();
-                if (linkcount > 14)
-                    iter.remove();
-            }
-        }
-        
+
         System.out.println("== Domain list ==");
         for (String domain : domains.keySet())
             System.out.println("*{{spamlink|" + domain + "}}");
         System.out.println();
-        
+
         System.out.println("== Blacklist log ==");
         domains.forEach((key, value) ->
         {
@@ -192,39 +210,57 @@ public class UserLinkAdditionFinder
         });
         System.out.flush();
     }
-    
+
+    /**
+     *  Fetches the list of links added by a list of users. The list of users
+     *  must be a list of usernames only, no User: prefix or wikilinks allowed.
+     *  @param users the list of users to get link additions for
+     *  @param earliest return edits no earlier than this date
+     *  @return a Map: revision &#8594; added links
+     *  @throws IOException if a network error occurs
+     */
+    public static Map<Wiki.Revision, List<String>> getLinksAdded(List<String> users, OffsetDateTime earliest) throws IOException
+    {
+        Map<Wiki.Revision, List<String>> results = new HashMap<>();
+        List<Wiki.Revision>[] contribs = wiki.contribs(users.toArray(new String[0]), "", null, earliest, null, Wiki.MAIN_NAMESPACE);
+        List<Wiki.Revision> revisions = Arrays.stream(contribs)
+            .flatMap(List::stream)
+            .filter(revision -> !revision.isContentDeleted())
+            .collect(Collectors.toList());
+        for (Wiki.Revision revision : revisions)
+        {
+            // remove all sets { revision, links... } where no links are added
+            List<String> temp = parseDiff(revision);
+            if (!temp.isEmpty())
+                results.put(revision, temp);
+        }
+        return results;
+    }
+
     /**
      *  Returns a list of external links added by a particular revision.
      *  @param revision the revision to check of added external links.
-     *  @return a map: revision &#8594; list of added URLs.
+     *  @return the list of added URLs
      *  @throws IOException if a network error occurs
      */
-    public static Map<Wiki.Revision, List<String>> parseDiff(Wiki.Revision revision) throws IOException
+    public static List<String> parseDiff(Wiki.Revision revision) throws IOException
     {
         // fetch the diff
-        String diff;
-        Map<Wiki.Revision, List<String>> ret = new HashMap<>();
-        List<String> links = new ArrayList<>();
-        if (revision.isNew())
-            diff = revision.getText();
-        else
-            diff = revision.diff(Wiki.PREVIOUS_REVISION);
+        String diff = revision.isNew() ? revision.getText() : revision.diff(Wiki.PREVIOUS_REVISION);
         // filter dummy edits
-        if (diff == null)
-        {
-            ret.put(revision, links);
-            return ret;
-        }
+        if (diff == null || diff.isEmpty())
+            return Collections.emptyList();
+        List<String> links = new ArrayList<>();
 
         // some HTML strings we are looking for
-        // see https://en.wikipedia.org/w/api.php?action=query&prop=revisions&revids=77350972&rvdiffto=prev
+        // see https://en.wikipedia.org/w/api.php?action=compare&fromrev=77350972&torelative=prev
         String diffaddedbegin = "<td class=\"diff-addedline\">";
         String diffaddedend = "</td>";
         String deltabegin = "<ins class=\"diffchange diffchange-inline\">";
         String deltaend = "</ins>";
         // link regex
         Pattern pattern = Pattern.compile("https?://.+?\\..{2,}?(?:\\s|]|<|$)");
-        
+
         // Condense deltas to avoid problems like https://en.wikipedia.org/w/index.php?title=&diff=prev&oldid=486611734
         diff = diff.toLowerCase();
         diff = diff.replace(deltaend + " " + deltabegin, " ");
@@ -244,8 +280,7 @@ public class UserLinkAdditionFinder
                     // extract links
                     Matcher matcher = pattern.matcher(delta);
                     while (matcher.find())
-                        links.add(matcher.group().split("[\\|<\\]\\s]")[0]);
-                        
+                        links.add(matcher.group().split("[\\|<\\]\\s\\}]")[0]);
                     k = y3;
                 }
             }
@@ -253,12 +288,10 @@ public class UserLinkAdditionFinder
             {
                 Matcher matcher = pattern.matcher(addedline);
                 while (matcher.find())
-                    links.add(matcher.group().split("[\\|<\\]\\s]")[0]);
+                    links.add(matcher.group().split("[\\|<\\]\\s\\}]")[0]);
             }
             j = y2;
         }
-        
-        ret.put(revision, links);
-        return ret;
+        return links;
     }
 }

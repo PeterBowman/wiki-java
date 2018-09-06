@@ -1,6 +1,6 @@
 /**
- *  @(#)WMFWikiUnitTest.java 0.01 12/11/2017
- *  Copyright (C) 2017 - 20xx MER-C
+ *  @(#)package-info.java 0.01 15/02/2018
+ *  Copyright (C) 2018 MER-C
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -18,31 +18,17 @@
  *  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
-package org.wikipedia;
-
-import org.junit.BeforeClass;
-import org.junit.Test;
-import static org.junit.Assert.*;
-
 /**
- *  Unit tests for {@link org.wikipedia.WMFWiki}.
- *  @author MER-C
+ *  A collection of MediaWiki/Wikimedia related utilities, including a rather
+ *  sketchy bot framework that consists of only one file.
+ *
+ *  <p>
+ *  This package does not, and will not, have any dependencies outside of the
+ *  core JDK. Only the java.base and java.logging modules are required.
+ *
+ *  <p>
+ *  All methods should work on a vanilla installation of MediaWiki with the 
+ *  exception of {@link WMFWiki}. Required extension(s) for any given method 
+ *  are denoted in the documentation.
  */
-public class WMFWikiUnitTest
-{
-    public static WMFWiki enWiki;
-    
-    @BeforeClass
-    public static void setUpClass()
-    {
-        enWiki = WMFWiki.createInstance("en.wikipedia.org");
-        enWiki.setMaxLag(-1);
-    }
-    
-    @Test
-    public void isSpamBlacklisted() throws Exception
-    {
-        assertFalse(enWiki.isSpamBlacklisted("example.com"));
-        assertTrue(enWiki.isSpamBlacklisted("youtu.be"));
-    }
-}
+package org.wikipedia;

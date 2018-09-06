@@ -1,6 +1,6 @@
 /**
  *  @(#)ArrayUtils.java 0.01 31/10/2017
- *  Copyright (C) 2007 - 2017 MER-C and contributors
+ *  Copyright (C) 2007 - 2018 MER-C and contributors
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -21,9 +21,10 @@
 package org.wikipedia;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
- *  Convenience methods for dealing with lists of pages.
+ *  Convenience methods for dealing with lists of pages and revisions.
  *  @author MER-C
  *  @version 0.01
  */
@@ -34,15 +35,15 @@ public class ArrayUtils
      *  number of lists of articles <var>b</var>. Such lists might be generated
      *  from the various list methods below. Examples from the English Wikipedia:
      *
-     *  <code>
+     *  <pre>{@code 
      *  // find all orphaned and unwikified articles
-     *  String[] articles = ArrayUtils.intersection(wikipedia.getCategoryMembers("All orphaned articles", {@link Wiki#MAIN_NAMESPACE}),
-     *      wikipedia.getCategoryMembers("All pages needing to be wikified", {@link Wiki#MAIN_NAMESPACE}));
+     *  String[] articles = ArrayUtils.intersection(wikipedia.getCategoryMembers("All orphaned articles", Wiki.MAIN_NAMESPACE),
+     *      wikipedia.getCategoryMembers("All pages needing to be wikified", Wiki.MAIN_NAMESPACE));
      *
      *  // find all (notable) living people who are related to Barack Obama
-     *  String[] people = ArrayUtils.intersection(wikipedia.getCategoryMembers("Living people", {@link Wiki#MAIN_NAMESPACE}),
-     *      wikipedia.whatLinksHere("Barack Obama", {@link Wiki#MAIN_NAMESPACE}));
-     *  </code>
+     *  String[] people = ArrayUtils.intersection(wikipedia.getCategoryMembers("Living people", Wiki.MAIN_NAMESPACE),
+     *      wikipedia.whatLinksHere("Barack Obama", Wiki.MAIN_NAMESPACE));
+     *  }</pre>
      *
      *  @param a a list of pages
      *  @param b at least one other list of pages 
@@ -64,15 +65,15 @@ public class ArrayUtils
      *  generated from the various lists below. Some examples from the English 
      *  Wikipedia:
      *
-     *  <code>
+     *  <pre>{@code
      *  // find all Martian crater articles that do not have an infobox
-     *  String[] articles = Wiki.relativeComplement(wikipedia.getCategoryMembers("Craters on Mars"),
-     *      wikipedia.whatTranscludesHere("Template:MarsGeo-Crater", {@link Wiki#MAIN_NAMESPACE}));
+     *  String[] articles = ArrayUtils.relativeComplement(wikipedia.getCategoryMembers("Craters on Mars"),
+     *      wikipedia.whatTranscludesHere("Template:MarsGeo-Crater", Wiki.MAIN_NAMESPACE));
      *
      *  // find all images without a description that haven't been tagged "no license"
-     *  String[] images = Wiki.relativeComplement(wikipedia.getCategoryMembers("Images lacking a description"),
+     *  String[] images = ArrayUtils.relativeComplement(wikipedia.getCategoryMembers("Images lacking a description"),
      *      wikipedia.getCategoryMembers("All images with unknown copyright status"));
-     *  </code>
+     *  }</pre>
      *
      *  @param a a list of pages
      *  @param b another list of pages
@@ -87,5 +88,40 @@ public class ArrayUtils
         for (String[] subarray : b)
             compl.removeAll(Arrays.asList(subarray));
         return compl.toArray(new String[compl.size()]);
+    }
+    
+    /**
+     *  Removes reverts from a list of revisions. A revert is defined as any 
+     *  revision on a page that has the same SHA-1 as any previous (as in time) 
+     *  revision on that page. As a side effect, the returned array is sorted
+     *  by timestamp with the earliest revision first and with duplicates 
+     *  removed.
+     * 
+     *  @param revisions the revisions to remove reverts from
+     *  @return the array of revisions with reverts removed
+     */
+    public static Wiki.Revision[] removeReverts(Wiki.Revision[] revisions)
+    {
+        // Group revisions by page, then sort so that the oldest edits are first.
+        Map<String, Set<Wiki.Revision>> stuff = Arrays.stream(revisions)
+            .collect(Collectors.groupingBy(Wiki.Revision::getTitle, Collectors.toCollection(TreeSet::new)));
+        Set<Wiki.Revision> ret = new LinkedHashSet<>();
+        stuff.forEach((page, listofrevisions) ->
+        {
+            // Therefore, if a sha1 matches any previous revisions it is a revert.
+            Set<String> hashes = new HashSet<>();
+            Iterator<Wiki.Revision> iter = listofrevisions.iterator();
+            while (iter.hasNext())
+            {
+                String sha1 = iter.next().getSha1();
+                if (sha1 == null)
+                    continue;
+                if (hashes.contains(sha1))
+                    iter.remove();
+                hashes.add(sha1);
+            }
+            ret.addAll(listofrevisions);
+        });
+        return ret.toArray(new Wiki.Revision[ret.size()]);
     }
 }

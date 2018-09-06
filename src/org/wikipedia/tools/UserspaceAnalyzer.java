@@ -39,23 +39,22 @@ public class UserspaceAnalyzer
      */
     public static void main(String[] args) throws Exception
     {
-        // check command line arguments
+        // parse command line arguments
         if (args.length == 0)
             args = new String[] { "--help" };
-        if (args[0].equals("--help"))
-        {
-            System.out.println("SYNOPSIS:\n\t java org.wikipedia.tools.UserspaceAnalyzer [search term]\n\n"
-                    + "DESCRIPTION:\n\tSearches userspace for pages eligible for deletion per [[WP:CSD#U5]].\n\n"
-                    + "\t--help\n\t\tPrints this screen and exits.");
-            System.exit(0);
-        }
-
+        Map<String, String> parsedargs = new CommandLineParser()
+            .synopsis("org.wikipedia.tools.UserspaceAnalyzer", "[search term]")
+            .description("Searches userspace for pages eligible for deletion per [[WP:CSD#U5]]")
+            .addHelp()
+            .addVersion("UserspaceAnalyzer v0.01\n" + CommandLineParser.GPL_VERSION_STRING)
+            .parse(args);
+        
         Wiki wiki = Wiki.createInstance("en.wikipedia.org");
-        String[][] results = wiki.search(args[0], Wiki.USER_NAMESPACE);
+        Map<String, Object>[] results = wiki.search(args[0], Wiki.USER_NAMESPACE);
         HashSet<String> users = new HashSet<>(500);
-        for (String[] result : results)
+        for (Map<String, Object> result : results)
         {
-            String username = result[0];
+            String username = (String)result.get("title");
             if (username.contains("/Books/"))
                 continue;
             username = wiki.getRootPage(username);
@@ -63,7 +62,7 @@ public class UserspaceAnalyzer
         }
 
         String[] usernames = users.toArray(new String[0]);
-        Map<String, Object>[] userinfo = wiki.getUserInfo(usernames);
+        Wiki.User[] userinfo = wiki.getUsers(usernames);
         
         System.out.println("==Results for " + args[0] + "==");
         System.out.println("{| class=\"wikitable sortable\"");
@@ -79,8 +78,7 @@ public class UserspaceAnalyzer
                     usernames[i], usernames[i]);
                 continue;
             }
-            int count = (Integer)userinfo[i].get("editcount");
-            if (count > 50)
+            if (userinfo[i].countEdits() > 50)
                 continue;
             Wiki.Revision[] contribs = wiki.contribs(usernames[i]);
             if (contribs.length == 0)
@@ -88,7 +86,7 @@ public class UserspaceAnalyzer
             int mainspace = 0, userspace = 0;
             for (Wiki.Revision edit : contribs)
             {
-                int namespace = wiki.namespace(edit.getPage());
+                int namespace = wiki.namespace(edit.getTitle());
                 if (namespace == Wiki.MAIN_NAMESPACE)
                     mainspace++;
                 if (namespace == Wiki.USER_NAMESPACE || namespace == Wiki.USER_TALK_NAMESPACE)

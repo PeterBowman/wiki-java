@@ -1,7 +1,7 @@
 <project>
     <groupId>org.wikipedia</groupId>
     <artifactId>wiki-java</artifactId>
-    <version>0.34-SNAPSHOT</version>
+    <version>0.36-SNAPSHOT</version>
     <modelVersion>4.0.0</modelVersion>
 
     <build>
@@ -103,12 +103,17 @@
                     <version>2.20.1</version>
                     <configuration>
                         <includes>
-                            <include>**/WikiUnitTest.java</include>
-                            <include>**/WMFWikiUnitTest.java</include>
-                            <include>**/ParserUtilsUnitTest.java</include>
-                            <include>**/ArrayUtilsUnitTest.java</include>
-                            <include>**/ArticleEditorIntersectorUnitTest.java</include>
-                            <include>**/UserLinkAdditionFinderUnitTest.java</include>
+                            <include>**/WikiTest.java</include>
+                            <include>**/WMFWikiTest.java</include>
+                            <include>**/ExternalLinksTest.java</include>
+                            <include>**/PagesTest.java</include>
+                            <include>**/ParserUtilsTest.java</include>
+                            <include>**/ArrayUtilsTest.java</include>
+                            <include>**/ArticleEditorIntersectorTest.java</include>
+                            <include>**/CommandLineParserTest.java</include>
+                            <include>**/ContributionSurveyorTest.java</include>
+                            <include>**/UserLinkAdditionFinderTest.java</include>
+                            <include>**/ExternalLinkPopularityTest.java</include>
                         </includes>
                     </configuration>
                 </plugin>
