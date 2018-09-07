@@ -22,6 +22,8 @@ package org.wikipedia;
 import java.io.*;
 import java.net.URLEncoder;
 import java.util.*;
+import java.util.function.*;
+import java.util.regex.*;
 import javax.security.auth.login.*;
 
 /**
@@ -32,6 +34,14 @@ import javax.security.auth.login.*;
 public class Pages 
 {
     private final Wiki wiki;
+    
+    /**
+     *  A function, when supplied to {@link #toWikitextList(Iterable, Function, 
+     *  boolean)}, transforms a {@code List} of pages into a list of links in
+     *  wikitext.
+     *  @see #toWikitextList(Iterable, Function, boolean)
+     */
+    public static final Function<String, String> LIST_OF_LINKS = title -> "[[:" + title + "]]";
     
     private Pages(Wiki wiki)
     {
@@ -68,7 +78,7 @@ public class Pages
      *  flattened. Link descriptions are removed.
      *
      *  @param wikitext a wikitext list of pages as described above
-     *  @see #toWikitextList(Iterable, boolean)
+     *  @see #toWikitextList(Iterable, Function, boolean)
      *  @return a list of parsed titles
      *  @since Wiki.java 0.11
      */
@@ -82,16 +92,17 @@ public class Pages
             int wikilinkend = line.indexOf("]]");
             if (wikilinkstart < 0 || wikilinkend < 0)
                 continue;
-            titles.add(ParserUtils.parseWikilink(line.substring(wikilinkstart, wikilinkend + 2)).get(0));
+            titles.add(WikitextUtils.parseWikilink(line.substring(wikilinkstart, wikilinkend + 2)).get(0));
         }
         return titles;
     }
 
     /**
      *  Exports a list of pages, say, generated from one of the query methods to
-     *  wikitext. Does the exact opposite of {@link #parseWikitextList(String)},
-     *  i.e. {@code { "Main Page", "Wikipedia:Featured picture candidates",
-     *  "File:Example.png" }} becomes the string:
+     *  wikitext. When supplied with {@link #LIST_OF_LINKS}, this method does 
+     *  the exact opposite of {@link #parseWikitextList(String)}, i.e. {@code
+     *  { "Main Page", "Wikipedia:Featured picture candidates", "File:Example.png" }}
+     *  becomes the string:
      *
      *  <pre>
      *  *[[:Main Page]]
@@ -99,6 +110,7 @@ public class Pages
      *  *[[:File:Example.png]]
      *  </pre>
      * 
+     *  <p>
      *  If a <var>numbered</var> list is desired, the output is:
      * 
      *  <pre>
@@ -106,24 +118,97 @@ public class Pages
      *  #[[:Wikipedia:Featured picture candidates]]
      *  #[[:File:Example.png]]
      *  </pre>
+     * 
+     *  <p>
+     *  The generator function may be used, for instance, to <a  
+     *  href="https://en.wikipedia.org/wiki/Category:Pagelinks_templates"> supply 
+     *  a different template depending on namespace</a>, to insert other 
+     *  template arguments or add custom wikilink descriptions.
      *
      *  @param pages a list of page titles
+     *  @param generator a generator of wikitext given a particular title
      *  @param numbered whether this is a numbered list
      *  @return the list, exported as wikitext
      *  @see #parseWikitextList(String)
      *  @since Wiki.java 0.14
      */
-    public static String toWikitextList(Iterable<String> pages, boolean numbered)
+    public static String toWikitextList(Iterable<String> pages, Function<String, String> generator, boolean numbered)
     {
         StringBuilder buffer = new StringBuilder(10000);
         for (String page : pages)
         {
-            buffer.append(numbered ? "#[[:" : "*[[:");
-            buffer.append(page);
-            buffer.append("]]\n");
+            buffer.append(numbered ? "#" : "*");
+            buffer.append(generator.apply(page));
+            buffer.append("\n");
         }
         return buffer.toString();
     }
+    
+    /**
+     *  Exports a list of pages, say, generated from one of the query methods to
+     *  wikitext, where each page is the single argument of the given 
+     *  <var>template</var>. For example: {@code { "Main Page",
+     *  "Wikipedia:Featured picture candidates", "File:Example.png" }} becomes 
+     *  the string:
+     *
+     *  <pre>
+     *  *{{template|1=Main Page}}
+     *  *{{template|1=Wikipedia:Featured picture candidates}}
+     *  *{{template|File:Example.png}}
+     *  </pre>
+     * 
+     *  If a <var>numbered</var> list is desired, the output is:
+     * 
+     *  <pre>
+     *  #{{template|1=Main Page}}
+     *  #{{template|1=Wikipedia:Featured picture candidates}}
+     *  #{{template|1=File:Example.png}}
+     *  </pre>
+     *
+     *  @param pages a list of page titles
+     *  @param template the template of which the input titles are the first and 
+     *  only argument
+     *  @param numbered whether this is a numbered list
+     *  @return the list, exported as wikitext
+     */
+    public static String toWikitextTemplateList(Iterable<String> pages, String template, boolean numbered)
+    {
+        return toWikitextList(pages, page -> "{{" + template + "|1=" + page + "}}", numbered);
+    }
+
+    /**
+     *  Given a list of templates, fetch the only argument of the given template.
+     *  This is deliberately simple because we don't want to wade into the mess  
+     *  that is parsing metatemplates for this common use case. For instance:
+     *  <kbd>{{user|A}} {{user|B}} {{user|C}}</kbd> becomes the list {@code 
+     *  {"A", "B", "C"}}. This can be used to reverse {@link 
+     *  toWikitextTemplateList(Iterable, String, boolean)}.
+     *
+     *  @param wikitext the wikitext to parse
+     *  @param template the template to look for
+     *  @return the list of arguments, assuming each template has a single argument
+     */
+    public static List<String> parseWikitextTemplateList(String wikitext, String template)
+    {
+        Pattern pattern = Pattern.compile("\\{\\{\\s*" + template + "\\s*", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(wikitext);
+        List<String> arguments = new ArrayList<>();
+        while (matcher.find())
+        {
+            int index = matcher.start();
+            int start = wikitext.indexOf("|", index) + 1;
+            int end = wikitext.indexOf("}}", index);
+            int arg = wikitext.indexOf("=", index) + 1;
+            if (arg < end)
+                start = Math.max(start, arg);
+            if (start >= 1 && start < end)
+                arguments.add(wikitext.substring(start, end).trim());
+            else if (start == 0)
+                arguments.add("");
+        }
+        return arguments;
+    }
+
     
     /**
      *  For a given list of pages, determine whether the supplied external links
@@ -166,12 +251,12 @@ public class Pages
             return ""; // no talk pages yet
         try
         {
-            String indexPHPURL = wiki.getIndexPHPURL();
+            String indexPHPURL = wiki.getIndexPhpUrl();
             String pageenc = URLEncoder.encode(page, "UTF-8");
             
-            return "<a href=\"" + wiki.getPageURL(page) + "\">" + page + "</a> ("
+            return "<a href=\"" + wiki.getPageUrl(page) + "\">" + page + "</a> ("
                 + "<a href=\"" + indexPHPURL + "?title=" + pageenc + "&action=edit\">edit</a> | "
-                + "<a href=\"" + wiki.getPageURL(wiki.getTalkPage(page)) + "\">talk</a> | "
+                + "<a href=\"" + wiki.getPageUrl(wiki.getTalkPage(page)) + "\">talk</a> | "
                 + "<a href=\"" + indexPHPURL + "?title=" + pageenc + "&action=history\">history</a> | "
                 + "<a href=\"" + indexPHPURL + "?title=Special:Log&page=" + pageenc + "\">logs</a>)";
         }

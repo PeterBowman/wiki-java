@@ -105,15 +105,21 @@
                         <includes>
                             <include>**/WikiTest.java</include>
                             <include>**/WMFWikiTest.java</include>
+                            <include>**/EventsTest.java</include>
                             <include>**/ExternalLinksTest.java</include>
                             <include>**/PagesTest.java</include>
-                            <include>**/ParserUtilsTest.java</include>
+                            <include>**/RevisionsTest.java</include>
+                            <include>**/UsersTest.java</include>
+                            <include>**/WikitextUtilsTest.java</include>
                             <include>**/ArrayUtilsTest.java</include>
+                            <include>**/MathsAndStatsTest.java</include>
                             <include>**/ArticleEditorIntersectorTest.java</include>
                             <include>**/CommandLineParserTest.java</include>
                             <include>**/ContributionSurveyorTest.java</include>
                             <include>**/UserLinkAdditionFinderTest.java</include>
                             <include>**/ExternalLinkPopularityTest.java</include>
+                            <include>**/GapFillingTextSearchTest.java</include>
+                            <include>**/ServletUtilsTest.java</include>
                         </includes>
                     </configuration>
                 </plugin>

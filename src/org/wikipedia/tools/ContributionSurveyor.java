@@ -1,5 +1,5 @@
 /**
- *  @(#)ContributionSurveyor.java 0.04 25/01/2018
+ *  @(#)ContributionSurveyor.java 0.05 17/08/2018
  *  Copyright (C) 2011-2018 MER-C
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -46,7 +46,7 @@ public class ContributionSurveyor
 {
     private final Wiki wiki;
     private OffsetDateTime earliestdate, latestdate;
-    private boolean nominor = true;
+    private boolean nominor = true; // noreverts = true;
     private int minsizediff = 150;
 
     /**
@@ -73,6 +73,7 @@ public class ContributionSurveyor
             .addBooleanFlag("--images", "Survey images both on the home wiki and Commons.")
             .addBooleanFlag("--userspace", "Survey userspace as well.")
             .addBooleanFlag("--includeminor", "Include minor edits.")
+//            .addBooleanFlag("--includereverts", "Include reverts.")
             .addSingleArgumentFlag("--minsize", "size", "Only includes edits that add more than size bytes (default: 150).")
             .addSingleArgumentFlag("--editsafter", "date", "Include edits made after this date (ISO format).")
             .addSingleArgumentFlag("--editsbefore", "date", "Include edits made before this date (ISO format).")
@@ -87,6 +88,7 @@ public class ContributionSurveyor
         boolean images = parsedargs.containsKey("--images");
         boolean userspace = parsedargs.containsKey("--userspace");
         boolean nominor = !parsedargs.containsKey("--includeminor");
+//        boolean noreverts = !parsedargs.containsKey("--includereverts");
         int minsize = Integer.parseInt(parsedargs.getOrDefault("--minsize", "150"));
         String earliestdatestring = parsedargs.get("--editsafter");
         String latestdatestring = parsedargs.get("--editsbefore");
@@ -163,9 +165,10 @@ public class ContributionSurveyor
         surveyor.setEarliestDateTime(editsafter);
         surveyor.setLatestDateTime(editsbefore);
         surveyor.setIgnoringMinorEdits(nominor);
+//        surveyor.setIgnoringReverts(noreverts);
         try (BufferedWriter outwriter = Files.newBufferedWriter(out))
         {
-            outwriter.write(surveyor.massContributionSurvey(users.toArray(new String[users.size()]), images, ns));
+            outwriter.write(surveyor.massContributionSurvey(users, images, ns));
         }
     }
 
@@ -210,6 +213,34 @@ public class ContributionSurveyor
     {
         return nominor;
     }
+
+    // Not effective until https://phabricator.wikimedia.org/T185809 is resolved
+    // and being able to get tags of revisions.
+    
+    /*
+     *  Sets whether surveys ignore reverts. Default = true.
+     *  @param ignorereverts (see above)
+     *  @see #isIgnoringReverts()
+     *  @see Revisions#removeReverts
+     *  @since 0.05
+     *
+    public void setIgnoringReverts(boolean ignorereverts)
+    {
+        noreverts = ignorereverts;
+    }
+    
+    /*
+     *  Gets whether surveys ignore reverts. Default = true.
+     *  @return (see above)
+     *  @see #setIgnoringReverts(boolean)
+     *  @see Revisions#removeReverts
+     *  @since 0.04
+     *
+    public boolean isIgnoringReverts()
+    {
+        return noreverts;
+    }
+    */
 
     /**
      *  Sets the date/time at which surveys start; no edits will be returned
@@ -295,20 +326,29 @@ public class ContributionSurveyor
      *  @throws IOException if a network error occurs
      *  @since 0.04
      */
-    public Map<String, Map<String, List<Wiki.Revision>>> contributionSurvey(String[] users, int... ns) throws IOException
+    public Map<String, Map<String, List<Wiki.Revision>>> contributionSurvey(List<String> users, int... ns) throws IOException
     {
         Map<String, Boolean> options = new HashMap<>();
         if (nominor)
             options.put("minor", Boolean.FALSE);
-        List<Wiki.Revision>[] edits = wiki.contribs(users, "", earliestdate, latestdate, options, ns);
+        Wiki.RequestHelper rh = wiki.new RequestHelper()
+            .inNamespaces(ns)
+            .withinDateRange(earliestdate, latestdate)
+            .filterBy(options);
+        List<List<Wiki.Revision>> edits = wiki.contribs(users, null, rh);
         Map<String, Map<String, List<Wiki.Revision>>> ret = new LinkedHashMap<>();
-        for (int i = 0; i < users.length; i++)
+        for (int i = 0; i < users.size(); i++)
         {
-            Map<String, List<Wiki.Revision>> results = edits[i].stream()
+            List<Wiki.Revision> useredits = edits.get(i);
+//            if (noreverts)
+//                useredits = Revisions.removeReverts(useredits);
+            Map<String, List<Wiki.Revision>> results = useredits.stream()
+            // RevisionDelete... should check for content AND no access, but with no SHA-1 that is impossible
+                .filter(rev -> !rev.isContentDeleted()) 
                 .filter(rev -> rev.getSizeDiff() >= minsizediff)
                 .sorted(Comparator.comparingInt(Wiki.Revision::getSizeDiff).reversed())
                 .collect(Collectors.groupingBy(Wiki.Revision::getTitle, LinkedHashMap::new, Collectors.toList()));
-            ret.put(users[i], results);
+            ret.put(users.get(i), results);
         }
         return ret;
     }
@@ -330,8 +370,12 @@ public class ContributionSurveyor
         int... ns) throws IOException, CredentialNotFoundException
     {
         // this looks a lot like ArticleEditorIntersector.intersectEditors()...
-        Wiki.Revision[] delcontribs = wiki.deletedContribs(username, latestdate,
-            earliestdate, false, ns);
+        Wiki.RequestHelper rh = wiki.new RequestHelper()
+            .withinDateRange(earliestdate, latestdate)
+            .inNamespaces(ns);
+        List<Wiki.Revision> delcontribs = wiki.deletedContribs(username, rh);
+//        if (noreverts)
+//            delcontribs = Revisions.removeReverts(delcontribs);
         LinkedHashMap<String, List<Wiki.Revision>> ret = new LinkedHashMap<>();
 
         // group contributions by page
@@ -359,8 +403,9 @@ public class ContributionSurveyor
     public String[][] imageContributionSurvey(Wiki.User user) throws IOException
     {
         // fetch local uploads
+        Wiki.RequestHelper rh = wiki.new RequestHelper().withinDateRange(earliestdate, latestdate);
         HashSet<String> localuploads = new HashSet<>(10000);
-        for (Wiki.LogEntry upload : wiki.getUploads(user, earliestdate, latestdate))
+        for (Wiki.LogEntry upload : wiki.getUploads(user, rh))
             localuploads.add(upload.getTitle());
 
         // fetch commons uploads
@@ -368,7 +413,7 @@ public class ContributionSurveyor
         Wiki.User comuser = commons.getUser(user.getUsername());
         HashSet<String> comuploads = new HashSet<>(10000);
         if (comuser != null)
-            for (Wiki.LogEntry upload : commons.getUploads(user, earliestdate, latestdate))
+            for (Wiki.LogEntry upload : commons.getUploads(user, rh))
                 comuploads.add(upload.getTitle());
 
         // fetch transferred commons uploads
@@ -394,7 +439,7 @@ public class ContributionSurveyor
      *  @param username the relevant username (use {@code null} to omit)
      *  @param survey the survey, in form of page &#8594; edits
      *  @return the formatted survey in wikitext
-     *  @see #contributionSurvey(String[], int...)
+     *  @see #contributionSurvey(List, int...)
      *  @since 0.04
      */
     public String formatTextSurveyAsWikitext(String username, Map<String, List<Wiki.Revision>> survey)
@@ -553,11 +598,11 @@ public class ContributionSurveyor
      *  @throws IOException if a network error occurs
      *  @since 0.02
      */
-    public String massContributionSurvey(String[] usernames, boolean images, int... ns) throws IOException
+    public String massContributionSurvey(List<String> usernames, boolean images, int... ns) throws IOException
     {
         StringBuilder out = new StringBuilder();
         Map<String, Map<String, List<Wiki.Revision>>> results = contributionSurvey(usernames, ns);
-        Wiki.User[] userinfo = wiki.getUsers(usernames);
+        Wiki.User[] userinfo = wiki.getUsers(usernames.toArray(new String[0]));
 
         Iterator<Map.Entry<String, Map<String, List<Wiki.Revision>>>> iter = results.entrySet().iterator();
         int userindex = 0;
@@ -577,7 +622,7 @@ public class ContributionSurveyor
             out.append("== ");
             out.append(username);
             out.append(" ==\n");
-            out.append(ParserUtils.generateUserLinksAsWikitext(username));
+            out.append(Users.generateWikitextSummaryLinks(username));
             out.append("\n");
             out.append(formatTextSurveyAsWikitext(username, survey));
 

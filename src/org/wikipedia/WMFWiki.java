@@ -25,7 +25,6 @@ import java.util.*;
 import java.util.logging.*;
 import java.util.stream.*;
 import java.time.*;
-import java.time.format.DateTimeFormatter;
 
 /**
  *  Stuff specific to Wikimedia wikis.
@@ -41,7 +40,7 @@ public class WMFWiki extends Wiki
     /**
      *  Denotes entries in the [[Special:Abuselog]]. These cannot be accessed
      *  through [[Special:Log]] or getLogEntries.
-     *  @see #getAbuseLogEntries(int[], String, String, OffsetDateTime, OffsetDateTime) 
+     *  @see #getAbuseLogEntries(int[], Wiki.RequestHelper) 
      */
     public static final String ABUSE_LOG = "abuselog";
     
@@ -51,24 +50,12 @@ public class WMFWiki extends Wiki
      *  @see Wiki#getLogEntries
      */
     public static final String SPAM_BLACKLIST_LOG = "spamblacklist";
-    
-    /**
-     *  Creates a new WMF wiki that represents the English Wikipedia.
-     *  @deprecated use WMFWiki#createInstance instead
-     */
-    @Deprecated
-    public WMFWiki()
-    {
-        super("en.wikipedia.org");
-    }
 
     /**
      *  Creates a new WMF wiki that has the given domain name.
      *  @param domain a WMF wiki domain name e.g. en.wikipedia.org
-     *  @deprecated use WMFWiki#createInstance instead; this will be made private
      */
-    @Deprecated
-    public WMFWiki(String domain)
+    protected WMFWiki(String domain)
     {
         super(domain, "/w", "https://");
     }
@@ -98,7 +85,7 @@ public class WMFWiki extends Wiki
         wiki.setMaxLag(0);
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "sitematrix");
-        String line = wiki.makeHTTPRequest(wiki.apiUrl, getparams, null, "WMFWiki.getSiteMatrix");
+        String line = wiki.makeApiCall(getparams, null, "WMFWiki.getSiteMatrix");
         ArrayList<WMFWiki> wikis = new ArrayList<>(1000);
 
         // form: <special url="http://wikimania2007.wikimedia.org" code="wikimania2007" fishbowl="" />
@@ -162,7 +149,7 @@ public class WMFWiki extends Wiki
         getparams.put("prop", "globalusage");
         getparams.put("titles", normalize(title));
     	
-        List<String[]> usage = makeListQuery("gu", query, getparams, null, "getGlobalUsage", (line, results) ->
+        List<String[]> usage = makeListQuery("gu", getparams, null, "getGlobalUsage", -1, (line, results) ->
         {
             for (int i = line.indexOf("<gu"); i > 0; i = line.indexOf("<gu", ++i))
                 results.add(new String[] {
@@ -219,41 +206,48 @@ public class WMFWiki extends Wiki
      *  of the page, <var>action</var> set to the action that was attempted (e.g.  
      *  "edit") and {@code null} (parsed)comment. <var>details</var> are a Map
      *  containing <var>filter_id</var>, <var>revid</var> if the edit was 
-     *  successful and <var>result</var> (what happened). All parameters are 
-     *  optional, but you should set at least one or a query limit.
+     *  successful and <var>result</var> (what happened). 
+     * 
+     *  <p>
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime, 
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#byTitle(String) title}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
      *  
      *  @param filters fetch log entries triggered by these filters (optional, 
      *  use null or empty list to get all filters)
-     *  @param user fetch log entries triggered by this user or IP (optional, use
-     *  null to skip)
-     *  @param title fetch log entries for this page (optional, use null to skip)
-     *  @param earliest fetch log entries no earlier than this date (optional, 
-     *  use null to skip)
-     *  @param latest fetch log entries no later than this date (optional, use 
-     *  null to skip)
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return the abuse filter log entries
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @throws UnsupportedOperationException if the AbuseFilter extension
      *  is not installed
      *  @see <a href="https://mediawiki.org/wiki/Extension:AbuseFilter">Extension:AbuseFilter</a>
      */
-    public List<LogEntry> getAbuseLogEntries(int[] filters, String user, String title, OffsetDateTime earliest, OffsetDateTime latest) throws IOException
+    public List<LogEntry> getAbuseLogEntries(int[] filters, Wiki.RequestHelper helper) throws IOException
     {
         requiresExtension("Abuse Filter");
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "abuselog");
         if (filters.length > 0)
             getparams.put("aflfilter", constructNamespaceString(filters));
-        if (user != null)
-            getparams.put("afluser", user);
-        if (title != null)
-            getparams.put("afltitle", normalize(title));
-        if (earliest != null)
-            getparams.put("aflend", earliest.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (latest != null)
-            getparams.put("aflstart", latest.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        if (helper != null)
+        {
+            helper.setRequestType("afl");
+            getparams.putAll(helper.addUserParameter());
+            getparams.putAll(helper.addTitleParameter());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addDateRangeParameters());
+            limit = helper.limit();
+        }
         
-        List<LogEntry> filterlog = makeListQuery("afl", query, getparams, null, "WMFWiki.getAbuseLogEntries", (line, results) ->
+        List<LogEntry> filterlog = makeListQuery("afl", getparams, null, "WMFWiki.getAbuseLogEntries", limit, (line, results) ->
         {
             String[] items = line.split("<item ");
             for (int i = 1; i < items.length; i++)

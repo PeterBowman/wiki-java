@@ -28,6 +28,7 @@ import java.text.Normalizer;
 import java.time.*;
 import java.time.format.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.function.*;
 import java.util.logging.*;
 import java.util.stream.*;
@@ -261,6 +262,12 @@ public class Wiki implements Comparable<Wiki>
      */
     public static final String PATROL_LOG = "patrol";
 
+    /**
+     *  Denotes the page creation log.
+     *  @since 0.36
+     */
+    public static final String PAGE_CREATION_LOG = "create";
+
     // PROTECTION LEVELS
 
     /**
@@ -319,53 +326,6 @@ public class Wiki implements Comparable<Wiki>
      *  @since 0.30
      */
     public static final int ASSERT_SYSOP = 8;
-
-    // RC OPTIONS
-
-    /**
-     *  In queries against the recent changes table, this would mean we don't
-     *  fetch anonymous edits.
-     *  @since 0.20
-     *  @deprecated Use rcoptions = a Map instead
-     */
-    @Deprecated
-    public static final int HIDE_ANON = 1;
-
-    /**
-     *  In queries against the recent changes table, this would mean we don't
-     *  fetch edits made by bots.
-     *  @since 0.20
-     *  @deprecated Use rcoptions = a Map instead
-     */
-    @Deprecated
-    public static final int HIDE_BOT = 2;
-
-    /**
-     *  In queries against the recent changes table, this would mean we don't
-     *  fetch by the logged in user.
-     *  @since 0.20
-     *  @deprecated Use rcoptions = a Map instead
-     */
-    @Deprecated
-    public static final int HIDE_SELF = 4;
-
-    /**
-     *  In queries against the recent changes table, this would mean we don't
-     *  fetch minor edits.
-     *  @since 0.20
-     *  @deprecated Use rcoptions = a Map instead
-     */
-    @Deprecated
-    public static final int HIDE_MINOR = 8;
-
-    /**
-     *  In queries against the recent changes table, this would mean we don't
-     *  fetch patrolled edits.
-     *  @since 0.20
-     *  @deprecated Use rcoptions = a Map instead
-     */
-    @Deprecated
-    public static final int HIDE_PATROLLED = 16;
 
     // REVISION OPTIONS
 
@@ -427,40 +387,27 @@ public class Wiki implements Comparable<Wiki>
 
     // fundamental URL strings
     private final String protocol, domain, scriptPath;
+    private String base, articleUrl;
 
     /**
-     *  URL for index.php. (Needs to be accessible to subclasses.)
-     *  @see #initVars()
-     *  @see #apiUrl
-     *  @see #query
-     *  @see <a href="https://mediawiki.org/wiki/Manual:Index.php">MediaWiki
-     *  documentation</a>
-     *  @deprecated replace with getIndexPHPURL(). Will be made private.
+     *  Stores default HTTP parameters for API calls. Contains {@linkplain
+     *  #setMaxLag(int) maxlag}, {@linkplain #setResolveRedirects(boolean) redirect
+     *  resolution} and {@linkplain #setAssertionMode(int) user and bot assertions}
+     *  when wanted by default. Add stuff to this map if you want to add parameters
+     *  to every API call.
+     *  @see #makeApiCall(Map, Map, String)
      */
-    @Deprecated
-    protected String base;
+    protected ConcurrentHashMap<String, String> defaultApiParams;
 
     /**
-     *  URL entrypoint for the MediaWiki API.  (Needs to be accessible to
+     *  URL entrypoint for the MediaWiki API. (Needs to be accessible to
      *  subclasses.)
      *  @see #initVars()
-     *  @see #base
-     *  @see #query
+     *  @see #getApiUrl()
      *  @see <a href="https://mediawiki.org/wiki/Manual:Api.php">MediaWiki
      *  documentation</a>
      */
     protected String apiUrl;
-
-    /**
-     *  Base URL for action=query type requests from the API.  (Needs to be
-     *  accessible to subclasses.)
-     *  @see #initVars()
-     *  @see #base
-     *  @see #apiUrl
-     *  @see <a href="https://www.mediawiki.org/wiki/API:Query">MediaWiki
-     *  documentation</a>
-     */
-    protected String query;
 
     // wiki properties
     private boolean siteinfofetched = false;
@@ -514,76 +461,29 @@ public class Wiki implements Comparable<Wiki>
     // CONSTRUCTORS AND CONFIGURATION
 
     /**
-     *  Creates a new connection to the English Wikipedia via HTTPS.
-     *  @since 0.02
-     *  @deprecated use Wiki#createInstance instead
-     */
-    @Deprecated
-    public Wiki()
-    {
-        this("en.wikipedia.org", "/w");
-    }
-
-    /**
-     *  Creates a new connection to a wiki via HTTPS. WARNING: if the wiki uses
-     *  a $wgScriptpath other than the default <tt>/w</tt>, you need to call
-     *  <tt>getScriptPath()</tt> to automatically set it. Alternatively, you
-     *  can use the constructor below if you know it in advance.
-     *
-     *  @param domain the wiki domain name e.g. en.wikipedia.org (defaults to
-     *  en.wikipedia.org)
-     *  @deprecated use Wiki#createInstance instead
-     */
-    @Deprecated
-    public Wiki(String domain)
-    {
-        this(domain, "/w");
-    }
-
-    /**
-     *  Creates a new connection to a wiki with $wgScriptpath set to
-     *  <tt>scriptPath</tt> via HTTPS.
-     *
-     *  @param domain the wiki domain name
-     *  @param scriptPath the script path
-     *  @since 0.14
-     *  @deprecated use Wiki#createInstance instead
-     */
-    @Deprecated
-    public Wiki(String domain, String scriptPath)
-    {
-        this(domain, scriptPath, "https://");
-    }
-
-    /**
-     *  Creates a new connection to a wiki with $wgScriptpath set to
-     *  <tt>scriptPath</tt> via the specified protocol.
+     *  Creates a new connection to a wiki with <a
+     *  href="https://mediawiki.org/wiki/Manual:$wgScriptPath"><var>
+     *  $wgScriptPath</var></a> set to <var>scriptPath</var> and via the
+     *  specified protocol.
      *
      *  @param domain the wiki domain name
      *  @param scriptPath the script path
      *  @param protocol a protocol e.g. "http://", "https://" or "file:///"
      *  @since 0.31
-     *  @deprecated use Wiki#createInstance instead; this will be made private
-     *  for the reason in the TODO comment below
      */
-    @Deprecated
-    public Wiki(String domain, String scriptPath, String protocol)
+    protected Wiki(String domain, String scriptPath, String protocol)
     {
-        if (domain == null || domain.isEmpty())
-            domain = "en.wikipedia.org";
         this.domain = Objects.requireNonNull(domain);
         this.scriptPath = Objects.requireNonNull(scriptPath);
         this.protocol = Objects.requireNonNull(protocol);
 
-        // init variables
-        // This is fine as long as you do not have parameters other than domain
-        // and scriptpath in constructors and do not do anything else than super(x)!
-        // http://stackoverflow.com/questions/3404301/whats-wrong-with-overridable-method-calls-in-constructors
-        // TODO: remove this
+        defaultApiParams = new ConcurrentHashMap<>();
+        defaultApiParams.put("format", "xml");
+        defaultApiParams.put("maxlag", String.valueOf(maxlag));
+
         logger.setLevel(loglevel);
         logger.log(Level.CONFIG, "[{0}] Using Wiki.java {1}", new Object[] { domain, version });
         CookieHandler.setDefault(cookies);
-        initVars();
     }
 
     /**
@@ -629,42 +529,16 @@ public class Wiki implements Comparable<Wiki>
 
     /**
      *  Edit this if you need to change the API and human interface url
-     *  configuration of the wiki. One example use is server-side cache
-     *  management (maxage and smaxage API parameters).
+     *  configuration of the wiki. One example use is to change the port number.
      *
      *  <p>Contributed by Tedder
      *  @since 0.24
      */
     protected void initVars()
     {
-        StringBuilder basegen = new StringBuilder(protocol);
-        basegen.append(domain);
-        basegen.append(scriptPath);
-        StringBuilder apigen = new StringBuilder(basegen);
-        apigen.append("/api.php?format=xml");
-        // MediaWiki has inbuilt maxlag functionality, see [[mw:Manual:Maxlag
-        // parameter]]. Let's exploit it.
-        if (maxlag >= 0)
-        {
-            apigen.append("&maxlag=");
-            apigen.append(maxlag);
-            basegen.append("/index.php?maxlag=");
-            basegen.append(maxlag);
-            basegen.append("&title=");
-        }
-        else
-            basegen.append("/index.php?title=");
-        base = basegen.toString();
-        // use inbuilt assertions
-        if ((assertion & ASSERT_BOT) == ASSERT_BOT)
-            apigen.append("&assert=bot");
-        else if ((assertion & ASSERT_USER) == ASSERT_USER)
-            apigen.append("&assert=user");
-        apiUrl = apigen.toString();
-        apigen.append("&action=query");
-        if (resolveredirect)
-            apigen.append("&redirects");
-        query = apigen.toString();
+        base = protocol + domain + scriptPath + "/index.php";
+        apiUrl = protocol + domain + scriptPath + "/api.php";
+        articleUrl = protocol + domain + "/wiki/";
     }
 
     /**
@@ -759,10 +633,21 @@ public class Wiki implements Comparable<Wiki>
      *  MediaWiki documentation</a>
      *  @since 0.35
      */
-    public String getIndexPHPURL()
+    public String getIndexPhpUrl()
     {
-        // TODO: replace with base once it is made private and stripped of junk
-        return protocol + domain + scriptPath + "/index.php";
+        return base;
+    }
+
+    /**
+     *  Gets the URL of api.php.
+     *  @return (see above)
+     *  @see <a href="https://mediawiki.org/wiki/Manual:Api.php">MediaWiki
+     *  documentation</a>
+     *  @since 0.36
+     */
+    public String getApiUrl()
+    {
+        return apiUrl;
     }
 
     /**
@@ -822,30 +707,25 @@ public class Wiki implements Comparable<Wiki>
         if (!siteinfofetched)
         {
             Map<String, String> getparams = new HashMap<>();
+            getparams.put("action", "query");
             getparams.put("meta", "siteinfo");
             getparams.put("siprop", "namespaces|namespacealiases|general|extensions");
-            String line = makeHTTPRequest(query, getparams, null, "getSiteInfo");
+            String line = makeApiCall(getparams, null, "getSiteInfo");
 
             // general site info
             String bits = line.substring(line.indexOf("<general "), line.indexOf("</general>"));
             wgCapitalLinks = parseAttribute(bits, "case", 0).equals("first-letter");
-            siteinfo.put("usingcapitallinks", wgCapitalLinks);
-            siteinfo.put("scriptpath", scriptPath);
             timezone = ZoneId.of(parseAttribute(bits, "timezone", 0));
-            siteinfo.put("timezone", timezone);
             mwVersion = parseAttribute(bits, "generator", 0);
-            siteinfo.put("version", mwVersion);
             locale = new Locale(parseAttribute(bits, "lang", 0));
-            siteinfo.put("locale", locale);
-            
+
             // parse extensions
             bits = line.substring(line.indexOf("<extensions>"), line.indexOf("</extensions>"));
             extensions = new ArrayList<>();
             String[] unparsed = bits.split("<ext ");
             for (int i = 1; i < unparsed.length; i++)
                 extensions.add(parseAttribute(unparsed[i], "name", 0));
-            siteinfo.put("extensions", extensions);
-                        
+
             // populate namespace cache
             namespaces = new LinkedHashMap<>(30);
             ns_subpages = new ArrayList<>(30);
@@ -873,18 +753,23 @@ public class Wiki implements Comparable<Wiki>
                 if (items[i].contains("subpages=\"\""))
                     ns_subpages.add(ns);
             }
-            initVars();
             siteinfofetched = true;
             log(Level.INFO, "getSiteInfo", "Successfully retrieved site info for " + getDomain());
         }
+        siteinfo.put("usingcapitallinks", wgCapitalLinks);
+        siteinfo.put("scriptpath", scriptPath);
+        siteinfo.put("timezone", timezone);
+        siteinfo.put("version", mwVersion);
+        siteinfo.put("locale", locale);
+        siteinfo.put("extensions", extensions);
         return siteinfo;
     }
-    
+
     /**
      *  Gets the version of MediaWiki this wiki runs e.g. 1.20wmf5 (54b4fcb).
      *  See [[Special:Version]] on your wiki.
      *  @return (see above)
-     *  @throws UncheckedIOException if the site info cache has not been 
+     *  @throws UncheckedIOException if the site info cache has not been
      *  populated and a network error occurred when populating it
      *  @since 0.14
      *  @see <a href="https://gerrit.wikimedia.org/">MediaWiki Git</a>
@@ -894,14 +779,14 @@ public class Wiki implements Comparable<Wiki>
         ensureNamespaceCache();
         return mwVersion;
     }
-    
+
     /**
      *  Detects whether a wiki forces upper case for the first character in a
      *  title. Example: en.wikipedia = true, en.wiktionary = false.
      *  @return (see above)
-     *  @throws UncheckedIOException if the site info cache has not been 
+     *  @throws UncheckedIOException if the site info cache has not been
      *  populated and a network error occurred when populating it
-     *  @see <a href="https://mediawiki.org/wiki/Manual:$wgCapitalLinks">MediaWiki 
+     *  @see <a href="https://mediawiki.org/wiki/Manual:$wgCapitalLinks">MediaWiki
      *  documentation</a>
      *  @since 0.30
      */
@@ -910,13 +795,13 @@ public class Wiki implements Comparable<Wiki>
         ensureNamespaceCache();
         return wgCapitalLinks;
     }
-    
+
     /**
      *  Returns the list of extensions installed on this wiki.
      *  @return (see above)
-     *  @throws UncheckedIOException if the site info cache has not been 
+     *  @throws UncheckedIOException if the site info cache has not been
      *  populated and a network error occurred when populating it
-     *  @see <a href="https://www.mediawiki.org/wiki/Manual:Extensions">MediaWiki 
+     *  @see <a href="https://www.mediawiki.org/wiki/Manual:Extensions">MediaWiki
      *  documentation</a>
      *  @since 0.35
      */
@@ -925,11 +810,11 @@ public class Wiki implements Comparable<Wiki>
         ensureNamespaceCache();
         return new ArrayList<>(extensions);
     }
-    
+
     /**
      *  Gets the timezone of this wiki
      *  @return (see above)
-     *  @throws UncheckedIOException if the site info cache has not been 
+     *  @throws UncheckedIOException if the site info cache has not been
      *  populated and a network error occurred when populating it
      *  @since 0.35
      */
@@ -938,11 +823,11 @@ public class Wiki implements Comparable<Wiki>
         ensureNamespaceCache();
         return timezone;
     }
-    
+
     /**
      *  Gets the locale of this wiki.
      *  @return (see above)
-     *  @throws UncheckedIOException if the site info cache has not been 
+     *  @throws UncheckedIOException if the site info cache has not been
      *  populated and a network error occurred when populating it
      *  @since 0.35
      */
@@ -1015,7 +900,10 @@ public class Wiki implements Comparable<Wiki>
     public void setResolveRedirects(boolean b)
     {
         resolveredirect = b;
-        initVars();
+        if (b)
+            defaultApiParams.put("redirects", "1");
+        else
+            defaultApiParams.remove("redirects");
     }
 
     /**
@@ -1150,7 +1038,10 @@ public class Wiki implements Comparable<Wiki>
     {
         maxlag = lag;
         log(Level.CONFIG, "setMaxLag", "Setting maximum allowable database lag to " + lag);
-        initVars();
+        if (maxlag >= 0)
+            defaultApiParams.put("maxlag", String.valueOf(maxlag));
+        else
+            defaultApiParams.remove("maxlag");
     }
 
     /**
@@ -1175,7 +1066,13 @@ public class Wiki implements Comparable<Wiki>
     {
         assertion = mode;
         log(Level.CONFIG, "setAssertionMode", "Set assertion mode to " + mode);
-        initVars();
+
+        if ((assertion & ASSERT_BOT) == ASSERT_BOT)
+            defaultApiParams.put("assert", "bot");
+        else if ((assertion & ASSERT_USER) == ASSERT_USER)
+            defaultApiParams.put("assert", "user");
+        else
+            defaultApiParams.remove("assert");
     }
 
     /**
@@ -1244,7 +1141,7 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("lgname", username);
         postparams.put("lgpassword", new String(password));
         postparams.put("lgtoken", getToken("login"));
-        String line = makeHTTPRequest(apiUrl, getparams, postparams, "login");
+        String line = makeApiCall(getparams, postparams, "login");
         Arrays.fill(password, '0');
 
         // check for success
@@ -1319,7 +1216,7 @@ public class Wiki implements Comparable<Wiki>
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "logout");
-        makeHTTPRequest(apiUrl, getparams, null, "logoutServerSide");
+        makeApiCall(getparams, null, "logoutServerSide");
         logout(); // destroy local cookies
     }
 
@@ -1333,9 +1230,10 @@ public class Wiki implements Comparable<Wiki>
     public boolean hasNewMessages() throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("meta", "userinfo");
         getparams.put("uiprop", "hasmsg");
-        return makeHTTPRequest(query, getparams, null, "hasNewMessages").contains("messages=\"\"");
+        return makeApiCall(getparams, null, "hasNewMessages").contains("messages=\"\"");
     }
 
     /**
@@ -1351,9 +1249,10 @@ public class Wiki implements Comparable<Wiki>
     public int getCurrentDatabaseLag() throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("meta", "siteinfo");
         getparams.put("siprop", "dbrepllag");
-        String line = makeHTTPRequest(query, getparams, null, "getCurrentDatabaseLag");
+        String line = makeApiCall(getparams, null, "getCurrentDatabaseLag");
         String lag = parseAttribute(line, "lag", 0);
         log(Level.INFO, "getCurrentDatabaseLag", "Current database replication lag is " + lag + " seconds");
         return Integer.parseInt(lag);
@@ -1372,9 +1271,10 @@ public class Wiki implements Comparable<Wiki>
     public Map<String, Integer> getSiteStatistics() throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("meta", "siteinfo");
         getparams.put("siprop", "statistics");
-        String text = makeHTTPRequest(query, getparams, null, "getSiteStatistics");
+        String text = makeApiCall(getparams, null, "getSiteStatistics");
         Map<String, Integer> ret = new HashMap<>(20);
         ret.put("pages", Integer.parseInt(parseAttribute(text, "pages", 0)));
         ret.put("articles", Integer.parseInt(parseAttribute(text, "articles", 0)));
@@ -1405,19 +1305,19 @@ public class Wiki implements Comparable<Wiki>
     /**
      *  Parses wikitext, revisions or pages. Deleted pages and revisions to
      *  deleted pages are not allowed if you don't have the rights to view them.
-     * 
+     *
      *  <p>
-     *  The returned HTML does not include "edit" links. Hyperlinks are 
+     *  The returned HTML does not include "edit" links. Hyperlinks are
      *  rewritten from useless relative links to other wiki pages to full URLs.
-     *  References to resources using protocol relative URLs are rewritten to 
+     *  References to resources using protocol relative URLs are rewritten to
      *  use {@linkplain #getProtocol() this wiki's protocol}.
      *
      *  <p>
      *  <b>Warnings</b>:
      *  <ul>
-     *  <li>The parameters to this method will be changed when the time comes 
+     *  <li>The parameters to this method will be changed when the time comes
      *      for JDK11 refactoring to accept Map.Entry instead. I also haven't
-     *      decided how many more boolean parameters to add, and what format 
+     *      decided how many more boolean parameters to add, and what format
      *      they will take.
      *  </ul>
      *
@@ -1428,7 +1328,7 @@ public class Wiki implements Comparable<Wiki>
      *  @return the parsed wikitext
      *  @throws NoSuchElementException or IllegalArgumentException if no content
      *  was supplied for parsing
-     *  @throws SecurityException if you pass a RevisionDeleted revision and 
+     *  @throws SecurityException if you pass a RevisionDeleted revision and
      *  lack the necessary privileges
      *  @throws IOException if a network error occurs
      *  @see #parse(String)
@@ -1470,15 +1370,15 @@ public class Wiki implements Comparable<Wiki>
         if (section >= 0)
             getparams.put("section", String.valueOf(section));
 
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "parse");
+        String response = makeApiCall(getparams, postparams, "parse");
         if (response.contains("error code=\""))
             // Bad section numbers, revids, deleted pages should all end up here.
-            // FIXME: makeHTTPRequest() swallows the API error "missingtitle" 
+            // FIXME: makeHTTPRequest() swallows the API error "missingtitle"
             // (deleted pages) to throw an UnknownError instead.
             return null;
         int y = response.indexOf('>', response.indexOf("<text")) + 1;
         int z = response.indexOf("</text>");
-        
+
         // Rewrite URLs to replace useless relative links and make images work on
         // locally saved copies of wiki pages.
         String html = decode(response.substring(y, z));
@@ -1531,10 +1431,11 @@ public class Wiki implements Comparable<Wiki>
 
         // no bulk queries here because they are deterministic
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("list", "random");
         if (ns[0] != ALL_NAMESPACES)
             getparams.put("rnnamespace", constructNamespaceString(ns));
-        String line = makeHTTPRequest(query, getparams, null, "random");
+        String line = makeApiCall(getparams, null, "random");
         return parseAttribute(line, "title", 0);
     }
 
@@ -1549,9 +1450,10 @@ public class Wiki implements Comparable<Wiki>
     public String getToken(String type) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("meta", "tokens");
         getparams.put("type", type);
-        String content = makeHTTPRequest(query, getparams, null, "getToken");
+        String content = makeApiCall(getparams, null, "getToken");
         return parseAttribute(content, type + "token", 0);
     }
 
@@ -1633,12 +1535,12 @@ public class Wiki implements Comparable<Wiki>
      *  @return (see above)
      *  @since 0.35
      */
-    public String getPageURL(String page)
+    public String getPageUrl(String page)
     {
         try
         {
             page = normalize(page).replace(' ', '_');
-            return protocol + domain + "/wiki/" + URLEncoder.encode(page, "UTF-8");
+            return articleUrl + URLEncoder.encode(page, "UTF-8");
         }
         catch (IOException ex)
         {
@@ -1710,6 +1612,7 @@ public class Wiki implements Comparable<Wiki>
     public Map<String, Object>[] getPageInfo(String[] pages) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "info");
         getparams.put("inprop", "protection|displaytitle|watchers");
         Map<String, Object> postparams = new HashMap<>();
@@ -1719,7 +1622,7 @@ public class Wiki implements Comparable<Wiki>
         for (String temp : constructTitleString(pages))
         {
             postparams.put("titles", temp);
-            String line = makeHTTPRequest(query, getparams, postparams, "getPageInfo");
+            String line = makeApiCall(getparams, postparams, "getPageInfo");
             if (resolveredirect)
                 resolveRedirectParser(pages2, line);
 
@@ -1974,9 +1877,8 @@ public class Wiki implements Comparable<Wiki>
      *  revision doesn't exist or is deleted, return {@code null}.
      *  RevisionDeleted revisions are not allowed.
      *
-     *  @param titles a list of titles (use null or zero length to skip,
-     *  overrides revids).
-     *  @param revids a list of revids (use null or zero length to skip)
+     *  @param titles a list of titles (use null to skip, overrides revids)
+     *  @param revids a list of revids (use null to skip)
      *  @param section a section number. This section number must exist in all
      *  titles or revids otherwise you will get vast swathes of your results
      *  being erroneously null. Optional, use -1 to skip.
@@ -1988,10 +1890,11 @@ public class Wiki implements Comparable<Wiki>
     public String[] getText(String[] titles, long[] revids, int section) throws IOException
     {
         // determine what type of request we have. Cannot mix the two.
+        // FIXME: XML bleeding to return results for lists of pages
         boolean isrevisions;
         int count = 0;
         String[] titles2 = null;
-        if (titles != null && titles.length > 0)
+        if (titles != null)
         {
             // validate titles
             for (String title : titles)
@@ -2002,16 +1905,19 @@ public class Wiki implements Comparable<Wiki>
             // copy because redirect resolver overwrites
             titles2 = Arrays.copyOf(titles, count);
         }
-        else if (revids != null && revids.length > 0)
+        else if (revids != null)
         {
             isrevisions = true;
             count = revids.length;
         }
         else
             throw new IllegalArgumentException("Either titles or revids must be specified!");
+        if (count == 0)
+            return new String[0];
 
         Map<String, String> pageTexts = new HashMap<>(2 * count);
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "revisions");
         getparams.put("rvprop", "ids|content");
         if (section >= 0)
@@ -2022,7 +1928,7 @@ public class Wiki implements Comparable<Wiki>
         for (String chunk : chunks)
         {
             postparams.put(isrevisions ? "revids" : "titles", chunk);
-            String temp = makeHTTPRequest(query, getparams, postparams, "getPageText");
+            String temp = makeApiCall(getparams, postparams, "getText");
             String[] results = temp.split(isrevisions ? "<rev " : "<page ");
             if (!isrevisions && resolveredirect)
                 resolveRedirectParser(titles2, results[0]);
@@ -2274,7 +2180,7 @@ public class Wiki implements Comparable<Wiki>
         }
         else if (section != -2)
             postparams.put("section", section);
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "edit");
+        String response = makeApiCall(getparams, postparams, "edit");
 
         // done
         if (response.contains("error code=\"editconflict\""))
@@ -2371,7 +2277,7 @@ public class Wiki implements Comparable<Wiki>
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "delete");
+        String response = makeApiCall(getparams, postparams, "delete");
 
         // done
         if (!response.contains("<delete title="))
@@ -2417,7 +2323,7 @@ public class Wiki implements Comparable<Wiki>
                 sj.add(revision.getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
             postparams.put("timestamps", sj.toString());
         }
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "undelete");
+        String response = makeApiCall(getparams, postparams, "undelete");
 
         // done
         checkErrorsAndUpdateStatus(response, "undelete");
@@ -2445,7 +2351,7 @@ public class Wiki implements Comparable<Wiki>
         for (String x : constructTitleString(titles))
         {
             postparams.put("title", x);
-            makeHTTPRequest(query, getparams, postparams, "purge");
+            makeApiCall(getparams, postparams, "purge");
         }
         log(Level.INFO, "purge", "Successfully purged " + titles.length + " pages.");
     }
@@ -2466,7 +2372,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("prop", "images");
         getparams.put("titles", normalize(title));
 
-        List<String> images = makeListQuery("im", query, getparams, null, "getImagesOnPage", (line, results) ->
+        List<String> images = makeListQuery("im", getparams, null, "getImagesOnPage", -1, (line, results) ->
         {
             // xml form: <im ns="6" title="File:Example.jpg" />
             for (int a = line.indexOf("<im "); a > 0; a = line.indexOf("<im ", ++a))
@@ -2489,50 +2395,98 @@ public class Wiki implements Comparable<Wiki>
      */
     public String[] getCategories(String title) throws IOException
     {
-        return getCategories(title, false, false);
+        return getCategories(Arrays.asList(title), null, false).get(0).toArray(new String[0]);
     }
 
     /**
-     *  Gets the list of categories a particular page is in. Ignores hidden
-     *  categories if <var>ignoreHidden</var> is true. Also includes the sortkey
-     *  of a category if <var>sortkey</var> is true. The sortkey would then be
-     *  appended to the element of the returned string array (separated by "|").
+     *  Gets the list of categories that the given list of pages belongs to. 
+     *  Includes the sortkey of a category if <var>sortkey</var> is true. The 
+     *  sortkey would then be appended to the element of the returned strings
+     *  (separated by "|"). Accepted parameters from <var>helper</var> are:
+     *  are:
      *
-     *  @param title a page
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#filterBy(Map) filter by}: "hidden"
+     *  (hidden categories)
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
+     * 
+     *  @param titles a list of pages
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @param sortkey return a sortkey as well (default = false)
-     *  @param ignoreHidden skip hidden categories (default = false)
      *  @return the list of categories that the page is in
      *  @throws IOException if a network error occurs
      *  @since 0.30
      */
-    public String[] getCategories(String title, boolean sortkey, boolean ignoreHidden) throws IOException
+    public List<List<String>> getCategories(List<String> titles, Wiki.RequestHelper helper, boolean sortkey) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "categories");
-        if (sortkey || ignoreHidden)
-            getparams.put("clprop", "sortkey|hidden");
-        getparams.put("titles", normalize(title));
-
-        List<String> categories = makeListQuery("cl", query, getparams, null, "getCategories", (line, results) ->
+        int limit = -1;
+        if (helper != null)
         {
-            // xml form: <cl ns="14" title="Category:1879 births" sortkey=(long string) sortkeyprefix="" />
-            // or      : <cl ns="14" title="Category:Images for cleanup" sortkey=(long string) sortkeyprefix="Borders" hidden="" />
-            int a, b; // beginIndex and endIndex
-            for (a = line.indexOf("<cl "); a > 0; a = b)
+            helper.setRequestType("cl");
+            getparams.putAll(helper.addShowParameter());
+            limit = helper.limit();
+        }
+        
+        // copy array so redirect resolver doesn't overwrite
+        String[] titles2 = new String[titles.size()];
+        titles.toArray(titles2);
+        List<Map<String, List<String>>> stuff = new ArrayList<>();
+        Map<String, Object> postparams = new HashMap<>();
+        for (String temp : constructTitleString(titles2))
+        {
+            postparams.put("titles", temp);
+            stuff.addAll(makeListQuery("cl", getparams, postparams, "getCategories", limit, (line, results) ->
             {
-                b = line.indexOf("<cl ", a + 1);
-                if (ignoreHidden && line.substring(a, (b > 0 ? b : line.length())).contains("hidden"))
-                    continue;
-                String category = parseAttribute(line, "title", a);
-                if (sortkey)
-                    category += ("|" + parseAttribute(line, "sortkeyprefix", a));
-                results.add(category);
-            }
-        });
+                // Split the result into individual listings for each article.
+                String[] x = line.split("<page ");
+                if (resolveredirect)
+                    resolveRedirectParser(titles2, x[0]);
 
-        int temp = categories.size();
-        log(Level.INFO, "getCategories", "Successfully retrieved categories of " + title + " (" + temp + " categories)");
-        return categories.toArray(new String[temp]);
+                // Skip first element to remove front crud.
+                for (int i = 1; i < x.length; i++)
+                {
+                    // xml form: <cl ns="14" title="Category:1879 births" sortkey=(long string) sortkeyprefix="" />
+                    // or      : <cl ns="14" title="Category:Images for cleanup" sortkey=(long string) sortkeyprefix="Borders" hidden="" />
+                    String parsedtitle = parseAttribute(x[i], "title", 0);
+                    List<String> list = new ArrayList<>();
+                    for (int a = x[i].indexOf("<cl "); a > 0; a = x[i].indexOf("<cl ", ++a))
+                    {
+                        String category = parseAttribute(x[i], "title", a);
+                        if (sortkey)
+                            category += ("|" + parseAttribute(x[i], "sortkeyprefix", a));
+                        list.add(category);
+                    }
+                    Map<String, List<String>> intermediate = new HashMap<>();
+                    intermediate.put(parsedtitle, list);
+                    results.add(intermediate);
+                }
+            }));
+        }
+
+        // fill the return list
+        List<List<String>> ret = new ArrayList<>();
+        List<String> normtitles = new ArrayList<>();
+        for (String localtitle : titles2)
+        {
+            normtitles.add(normalize(localtitle));
+            ret.add(new ArrayList<>());
+        }
+        // then retrieve the results from the intermediate list of maps,
+        // ensuring results correspond to inputs
+        stuff.forEach(map ->
+        {
+            String parsedtitle = map.keySet().iterator().next();
+            List<String> templates = map.get(parsedtitle);
+            for (int i = 0; i < titles2.length; i++)
+                if (normtitles.get(i).equals(parsedtitle))
+                    ret.get(i).addAll(templates);
+        });
+        log(Level.INFO, "getCategories", "Successfully retrieved categories used on " + titles2.length + " pages.");
+        return ret;
     }
 
     /**
@@ -2613,10 +2567,10 @@ public class Wiki implements Comparable<Wiki>
         String[] titles2 = Arrays.copyOf(titles, titles.length);
         List<Map<String, List<String>>> stuff = new ArrayList<>();
         Map<String, Object> postparams = new HashMap<>();
-        for (String temp : constructTitleString(titles))
+            for (String temp : constructTitleString(titles))
         {
             postparams.put("titles", temp);
-            stuff.addAll(makeListQuery("tl", query, getparams, postparams, "getTemplates", (line, results) ->
+            stuff.addAll(makeListQuery("tl", getparams, postparams, "getTemplates", -1, (line, results) ->
             {
                 // Split the result into individual listings for each article.
                 String[] x = line.split("<page ");
@@ -2670,7 +2624,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("prop", "langlinks");
         getparams.put("titles", normalize(title));
 
-        List<String[]> blah = makeListQuery("ll", query, getparams, null, "getInterWikiLinks", (line, results) ->
+        List<String[]> blah = makeListQuery("ll", getparams, null, "getInterWikiLinks", -1, (line, results) ->
         {
             // xml form: <ll lang="en" />Main Page</ll> or <ll lang="en" /> for [[Main Page]]
             for (int a = line.indexOf("<ll "); a > 0; a = line.indexOf("<ll ", ++a))
@@ -2704,7 +2658,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("prop", "links");
         getparams.put("titles", normalize(title));
 
-        List<String> links = makeListQuery("pl", query, getparams, null, "getLinksOnPage", (line, results) ->
+        List<String> links = makeListQuery("pl", getparams, null, "getLinksOnPage", -1, (line, results) ->
         {
             // xml form: <pl ns="6" title="page name" />
             for (int a = line.indexOf("<pl "); a > 0; a = line.indexOf("<pl ", ++a))
@@ -2756,7 +2710,7 @@ public class Wiki implements Comparable<Wiki>
         for (String temp : constructTitleString(titles2))
         {
             postparams.put("titles", temp);
-            stuff.addAll(makeListQuery("el", query, getparams, postparams, "getExternalLinksOnPage", (line, results) ->
+            stuff.addAll(makeListQuery("el", getparams, postparams, "getExternalLinksOnPage", -1, (line, results) ->
             {
                 // Split the result into individual listings for each article.
                 String[] x = line.split("<page ");
@@ -2784,8 +2738,12 @@ public class Wiki implements Comparable<Wiki>
 
         // fill the return list
         List<List<String>> ret = new ArrayList<>();
-        for (String unused : titles)
+        List<String> normtitles = new ArrayList<>();
+        for (String localtitle : titles2)
+        {
+            normtitles.add(normalize(localtitle));
             ret.add(new ArrayList<>());
+        }
         // then retrieve the results from the intermediate list of maps,
         // ensuring results correspond to inputs
         stuff.forEach(map ->
@@ -2793,7 +2751,7 @@ public class Wiki implements Comparable<Wiki>
             String parsedtitle = map.keySet().iterator().next();
             List<String> templates = map.get(parsedtitle);
             for (int i = 0; i < titles2.length; i++)
-                if (normalize(titles2[i]).equals(parsedtitle))
+                if (normtitles.get(i).equals(parsedtitle))
                     ret.get(i).addAll(templates);
         });
         log(Level.INFO, "getExternalLinksOnPage", "Successfully retrieved external links used on " + titles2.length + " pages.");
@@ -2824,7 +2782,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("action", "parse");
         getparams.put("prop", "sections");
         getparams.put("text", "{{:" + normalize(page) + "}}__TOC__");
-        String line = makeHTTPRequest(query, getparams, null, "getSectionMap");
+        String line = makeApiCall(getparams, null, "getSectionMap");
 
         // xml form: <s toclevel="1" level="2" line="How to nominate" number="1" />
         LinkedHashMap<String, String> map = new LinkedHashMap<>(30);
@@ -2853,11 +2811,12 @@ public class Wiki implements Comparable<Wiki>
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Special and Media pages do not have histories!");
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "revisions");
         getparams.put("rvlimit", "1");
         getparams.put("titles", normalize(title));
         getparams.put("rvprop", "timestamp|user|ids|flags|size|comment|parsedcomment|sha1");
-        String line = makeHTTPRequest(query, getparams, null, "getTopRevision");
+        String line = makeApiCall(getparams, null, "getTopRevision");
         int a = line.indexOf("<rev "); // important space
         int b = line.indexOf("/>", a);
         if (a < 0) // page does not exist
@@ -2880,12 +2839,13 @@ public class Wiki implements Comparable<Wiki>
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Special and Media pages do not have histories!");
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "revisions");
         getparams.put("rvlimit", "1");
         getparams.put("rvdir", "newer");
         getparams.put("titles", normalize(title));
         getparams.put("rvprop", "timestamp|user|ids|flags|size|comment|parsedcomment|sha1");
-        String line = makeHTTPRequest(query, getparams, null, "getFirstRevision");
+        String line = makeApiCall(getparams, null, "getFirstRevision");
         int a = line.indexOf("<rev "); // important space!
         int b = line.indexOf("/>", a);
         if (a < 0) // page does not exist
@@ -2919,6 +2879,7 @@ public class Wiki implements Comparable<Wiki>
     public String[] resolveRedirects(String[] titles) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         if (!resolveredirect)
             getparams.put("redirects", "");
         Map<String, Object> postparams = new HashMap<>();
@@ -2926,7 +2887,7 @@ public class Wiki implements Comparable<Wiki>
         for (String blah : constructTitleString(titles))
         {
             postparams.put("titles", blah);
-            String line = makeHTTPRequest(query, getparams, postparams, "resolveRedirects");
+            String line = makeApiCall(getparams, postparams, "resolveRedirects");
             resolveRedirectParser(ret, line);
         }
         return ret;
@@ -2959,54 +2920,52 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets the entire revision history of a page. Be careful when using
-     *  this method as some pages (such as [[Wikipedia:Administrators'
-     *  noticeboard/Incidents]] have ~10^6 revisions.
+     *  Gets the revision history of a page. Accepted parameters from
+     *  <var>helper</var> are:
+     *
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#notByUser(String) not by user}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
      *
      *  @param title a page
-     *  @return the revisions of that page
-     *  @throws IOException or UncheckedIOException if a network error occurs
-     *  @since 0.19
-     */
-    public Revision[] getPageHistory(String title) throws IOException
-    {
-        return getPageHistory(title, null, null, false);
-    }
-
-    /**
-     *  Gets the revision history of a page between two dates.
-     *  @param title a page
-     *  @param start the EARLIEST of the two dates
-     *  @param end the LATEST of the two dates
-     *  @param reverse whether to put the oldest first (default = false, newest
-     *  first is how history pages work). DEPRECATED: use {@code Collections.reverse()}
-     *  in the JDK.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return the revisions of that page in that time span
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @throws UnsupportedOperationException if <var>title</var> is a Special
      *  or Media page
      *  @since 0.19
+     *  @see <a href="https://mediawiki.org/wiki/API:Revisions">MediaWiki
+     *  documentation</a>
      */
-    public Revision[] getPageHistory(String title, OffsetDateTime start, OffsetDateTime end, boolean reverse) throws IOException
+    public List<Revision> getPageHistory(String title, Wiki.RequestHelper helper) throws IOException
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Special and Media pages do not have histories!");
 
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "revisions");
         getparams.put("titles", normalize(title));
         getparams.put("rvprop", "timestamp|user|ids|flags|size|comment|parsedcomment|sha1");
-        if (reverse)
+        if (helper != null)
         {
-            log(Level.WARNING, "getPageHistory", "Parameter reverse is deprecated.");
-            getparams.put("rvdir", "newer");
+            helper.setRequestType("rv");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addUserParameter());
+            getparams.putAll(helper.addExcludeUserParameter());
+            getparams.putAll(helper.addTagParameter());
+            limit = helper.limit();
         }
-        if (start != null)
-            getparams.put(reverse ? "rvstart" : "rvend", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (end != null)
-            getparams.put(reverse ? "rvend" : "rvstart", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
 
-        List<Revision> revisions = makeListQuery("rv", query, getparams, null, "getPageHistory", (line, results) ->
+        List<Revision> revisions = makeListQuery("rv", getparams, null, "getPageHistory", limit, (line, results) ->
         {
             for (int a = line.indexOf("<rev "); a > 0; a = line.indexOf("<rev ", ++a))
             {
@@ -3015,90 +2974,61 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        // populate previous/next
-        int size = revisions.size();
-        Revision[] temp = revisions.toArray(new Revision[size]);
-        if (reverse)
-        {
-            for (int i = 0; i < size; i++)
-            {
-                if (i == 0)
-                    temp[i].sizediff = temp[i].size;
-                else
-                    temp[i].sizediff = temp[i].size - temp[i - 1].size;
-                if (i != size - 1)
-                    temp[i].next = temp[i + 1].getID();
-            }
-        }
-        else
-        {
-            for (int i = 0; i < size; i++)
-            {
-                if (i == size - 1)
-                    temp[i].sizediff = temp[i].size;
-                else
-                    temp[i].sizediff = temp[i].size - temp[i + 1].size;
-                if (i != 0)
-                    temp[i].next = temp[i - 1].getID();
-            }
-        }
-        log(Level.INFO, "getPageHistory", "Successfully retrieved page history of " + title + " (" + size + " revisions)");
-        return temp;
+        log(Level.INFO, "getPageHistory", "Successfully retrieved page history of "
+            + title + " (" + revisions.size() + " revisions)");
+        return revisions;
     }
 
     /**
-     *  Gets the deleted history of a page.
-     *  @param title a page
-     *  @return the deleted revisions of that page in that time span
+     *  Gets the deleted history of a page. Accepted parameters from
+     *  <var>helper</var> are:
+     *
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#notByUser(String) not by user}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  </ul>
+     *
+     *  @param title a page (mandatory)
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
+     *  @return the deleted revisions of that page subject to the optional
+     *  constraints in helper
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @throws SecurityException if we cannot obtain deleted revisions
      *  @throws UnsupportedOperationException if <var>title</var> is a Special
      *  or Media page
      *  @since 0.30
+     *  @see <a href="https://mediawiki.org/wiki/API:Deletedrevisions">MediaWiki
+     *  documentation</a>
      */
-    public Revision[] getDeletedHistory(String title) throws IOException
-    {
-        return getDeletedHistory(title, null, null, false);
-    }
-
-    /**
-     *  Gets the deleted history of a page.
-     *  @param title a page
-     *  @param start the EARLIEST of the two dates
-     *  @param end the LATEST of the two dates
-     *  @param reverse whether to put the oldest first (default = false, newest
-     *  first is how history pages work) DEPRECATED: use {@code Collections.reverse()}
-     *  in the JDK.
-     *  @return the deleted revisions of that page in that time span
-     *  @throws IOException or UncheckedIOException if a network error occurs
-     *  @throws SecurityException if we cannot obtain deleted revisions
-     *  @throws UnsupportedOperationException if <var>title</var> is a Special
-     *  or Media page
-     *  @since 0.30
-     */
-    public Revision[] getDeletedHistory(String title, OffsetDateTime start, OffsetDateTime end, boolean reverse)
-        throws IOException
+    public List<Revision> getDeletedHistory(String title, Wiki.RequestHelper helper) throws IOException
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Special and Media pages do not have histories!");
         if (user == null || !user.isAllowedTo("deletedhistory"))
             throw new SecurityException("Permission denied: not able to view deleted history");
 
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "deletedrevisions");
         getparams.put("drvprop", "ids|user|flags|size|comment|parsedcomment|sha1");
-        if (reverse)
+        if (helper != null)
         {
-            log(Level.WARNING, "getDeletedHistory", "Parameter reverse is deprecated");
-            getparams.put("drvdir", "newer");
+            helper.setRequestType("drv");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addUserParameter());
+            getparams.putAll(helper.addExcludeUserParameter());
+            getparams.putAll(helper.addTagParameter());
+            limit = helper.limit();
         }
-        if (start != null)
-            getparams.put(reverse ? "drvstart" : "drvend", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (end != null)
-            getparams.put(reverse ? "drvend" : "drvstart", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
         getparams.put("titles", normalize(title));
 
-        List<Revision> delrevs = makeListQuery("drv", query, getparams, null, "getDeletedHistory", (response, results) ->
+        List<Revision> delrevs = makeListQuery("drv", getparams, null, "getDeletedHistory", limit, (response, results) ->
         {
             int x = response.indexOf("<deletedrevs>");
             if (x < 0) // no deleted history
@@ -3117,65 +3047,53 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        int size = delrevs.size();
-        log(Level.INFO, "Successfully fetched " + size + " deleted revisions.", "deletedRevs");
-        return delrevs.toArray(new Revision[size]);
+        log(Level.INFO, "Successfully fetched " + delrevs.size() + " deleted revisions.", "deletedRevs");
+        return delrevs;
     }
 
     /**
-     *  Gets the deleted contributions of a user. Equivalent to
-     *  [[Special:Deletedcontributions]].
-     *  @param u a user
+     *  Gets the deleted contributions of a user in the given namespace.
+     *  Equivalent to [[Special:Deletedcontributions]]. Accepted parameters from
+     *  <var>helper</var> are:
+     *
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime, OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#inNamespaces(int...) namespaces}
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
+     *
+     *  @param username a user (mandatory)
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return the deleted contributions of that user
      *  @throws IOException if a network error occurs
      *  @throws SecurityException if we cannot obtain deleted revisions
      *  @since 0.30
+     *  @see <a href="https://mediawiki.org/wiki/API:Alldeletedrevisions">MediaWiki
+     *  documentation</a>
      */
-    public Revision[] deletedContribs(String u) throws IOException
+    public List<Revision> deletedContribs(String username, Wiki.RequestHelper helper) throws IOException
     {
-        return deletedContribs(u, null, null, false);
-    }
-
-    /**
-     *  Gets the deleted contributions of a user in the given namespace. Equivalent to
-     *  [[Special:Deletedcontributions]].
-     *  @param username a user
-     *  @param start the EARLIEST of the two dates
-     *  @param end the LATEST of the two dates
-     *  @param reverse whether to put the oldest first (default = false, newest
-     *  first is how history pages work). DEPRECATED: use <code>Collections.reverse()</code>
-     *  in the JDK.
-     *  @param namespace a list of namespaces
-     *  @return the deleted contributions of that user
-     *  @throws IOException if a network error occurs
-     *  @throws SecurityException if we cannot obtain deleted revisions
-     *  @since 0.30
-     */
-    public Revision[] deletedContribs(String username, OffsetDateTime end, OffsetDateTime start, boolean reverse, int... namespace)
-        throws IOException
-    {
-        // FIXME: parameters are in the wrong order!
-        // admin queries are annoying
         if (user == null || !user.isAllowedTo("deletedhistory"))
             throw new SecurityException("Permission denied: not able to view deleted history");
 
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "alldeletedrevisions");
         getparams.put("adrprop", "ids|user|flags|size|comment|parsedcomment|timestamp|sha1");
-        if (reverse)
+        if (helper != null)
         {
-            log(Level.WARNING, "deletedContribs", "Parameter reverse is deprecated.");
-            getparams.put("adrdir", "newer");
+            helper.setRequestType("adr");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addNamespaceParameter());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addTagParameter());
+            limit = helper.limit();
         }
-        if (start != null)
-            getparams.put(reverse ? "adrstart" : "adrend", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (end != null)
-            getparams.put(reverse ? "adrend" : "adrstart", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        getparams.put("adruser", normalize(username));
-        if (namespace.length > 0)
-            getparams.put("adrnamespace", constructNamespaceString(namespace));
 
-        List<Revision> delrevs = makeListQuery("adr", query, getparams, null, "deletedContribs", (response, results) ->
+        List<Revision> delrevs = makeListQuery("adr", getparams, null, "deletedContribs", limit, (response, results) ->
         {
             int x = response.indexOf("<alldeletedrevisions>");
             if (x < 0) // no deleted history
@@ -3194,9 +3112,8 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        int size = delrevs.size();
-        log(Level.INFO, "Successfully fetched " + size + " deleted revisions.", "deletedRevs");
-        return delrevs.toArray(new Revision[size]);
+        log(Level.INFO, "Successfully fetched " + delrevs.size() + " deleted revisions.", "deletedRevs");
+        return delrevs;
     }
 
     /**
@@ -3230,7 +3147,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("gadrprefix", prefix);
         getparams.put("gadrnamespace", String.valueOf(namespace));
 
-        List<String> pages = makeListQuery("gadr", query, getparams, null, "deletedPrefixIndex", (text, results) ->
+        List<String> pages = makeListQuery("gadr", getparams, null, "deletedPrefixIndex", -1, (text, results) ->
         {
             for (int x = text.indexOf("<page ", 0); x > 0; x = text.indexOf("<page ", ++x))
                 results.add(parseAttribute(text, "title", x));
@@ -3257,13 +3174,14 @@ public class Wiki implements Comparable<Wiki>
 
         // TODO: this can be multiquery(?)
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "deletedrevisions");
         getparams.put("drvlimit", "1");
         getparams.put("drvprop", "content");
         getparams.put("titles", normalize(page));
 
         // expected form: <rev timestamp="2009-04-05T22:40:35Z" xml:space="preserve">TEXT OF PAGE</rev>
-        String line = makeHTTPRequest(query, getparams, null, "getDeletedText");
+        String line = makeApiCall(getparams, null, "getDeletedText");
         int a = line.indexOf("<rev ");
         if (a < 0)
             return null;
@@ -3326,7 +3244,7 @@ public class Wiki implements Comparable<Wiki>
         if (user == null || !user.isAllowedTo("move"))
             throw new SecurityException("Permission denied: cannot move pages.");
         throttle();
-        
+
         // protection and token
         Map<String, Object> info = getPageInfo(title);
         // determine whether the page exists
@@ -3353,7 +3271,7 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("noredirect", "1");
         if (movesubpages && user.isAllowedTo("move-subpages"))
             postparams.put("movesubpages", "1");
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "move");
+        String response = makeApiCall(getparams, postparams, "move");
 
         // done
         if (!response.contains("move from"))
@@ -3424,7 +3342,7 @@ public class Wiki implements Comparable<Wiki>
         exp.delete(exp.length() - 3, exp.length());
         postparams.put("protections", pro);
         postparams.put("expiry", exp);
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "protect");
+        String response = makeApiCall(getparams, postparams, "protect");
 
         // done
         if (!response.contains("<protect "))
@@ -3465,10 +3383,11 @@ public class Wiki implements Comparable<Wiki>
     public String export(String title) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("export", "");
         getparams.put("exportnowrap", "");
         getparams.put("titles", normalize(title));
-        return makeHTTPRequest(query, getparams, null, "export");
+        return makeApiCall(getparams, null, "export");
     }
 
     // REVISION METHODS
@@ -3503,6 +3422,7 @@ public class Wiki implements Comparable<Wiki>
     {
         // build url and connect
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "revisions");
         getparams.put("rvprop", "ids|timestamp|user|comment|parsedcomment|flags|size|sha1");
         Map<String, Object> postparams = new HashMap<>();
@@ -3512,7 +3432,7 @@ public class Wiki implements Comparable<Wiki>
         for (String chunk : constructRevisionString(oldids))
         {
             postparams.put("revids", chunk);
-            String line = makeHTTPRequest(query, getparams, postparams, "getRevision");
+            String line = makeApiCall(getparams, postparams, "getRevision");
 
             for (int i = line.indexOf("<page "); i > 0; i = line.indexOf("<page ", ++i))
             {
@@ -3597,7 +3517,7 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("markbot", "1");
         if (!reason.isEmpty())
             postparams.put("summary", reason);
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "rollback");
+        String response = makeApiCall(getparams, postparams, "rollback");
 
         // done
         // ignorable errors
@@ -3701,7 +3621,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("token", getToken("csrf"));
             postparams.put("ids", revstring);
-            String response = makeHTTPRequest(apiUrl, getparams, postparams, "revisionDelete");
+            String response = makeApiCall(getparams, postparams, "revisionDelete");
 
             if (!response.contains("<revisiondelete "))
                 checkErrorsAndUpdateStatus(response, "revisionDelete");
@@ -3791,7 +3711,7 @@ public class Wiki implements Comparable<Wiki>
         if (bot)
             postparams.put("bot", "1");
         postparams.put("token", getToken("csrf"));
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "undo");
+        String response = makeApiCall(getparams, postparams, "undo");
 
         // done
         if (response.contains("error code=\"editconflict\""))
@@ -3831,24 +3751,21 @@ public class Wiki implements Comparable<Wiki>
      *
      *  <p>
      *  <b>WARNING</b>: the parameters to this method will be changed when the
-     *  time comes for JDK11 refactoring to {@code diff(Map.Entry<String, Object>
-     *  from, int fromsection, Map.Entry<String, Object> to, int tosection)}.
+     *  time comes for Multi-Content revisions and JDK11 refactoring.
      *
      *  @param from the content on the left hand side of the diff
-     *  @param fromsection diff from only this section (optional, use -1 to skip)
      *  @param to the content on the right hand side of the diff
-     *  @param tosection diff from only this section (optional, use -1 to skip)
      *  @return a HTML difference table between the two texts, "" for dummy
      *  edits or null as described above
      *  @throws NoSuchElementException or IllegalArgumentException if no from or
      *  to content is specified
-     *  @throws SecurityException if you pass a RevisionDeleted revision and 
+     *  @throws SecurityException if you pass a RevisionDeleted revision and
      *  don't have the necessary privileges
      *  @throws IOException if a network error occurs
      *  @see <a href="https://mediawiki.org/wiki/API:Compare">MediaWiki documentation</a>
      *  @since 0.35
      */
-    public String diff(Map<String, Object> from, int fromsection, Map<String, Object> to, int tosection) throws IOException
+    public String diff(Map<String, Object> from, Map<String, Object> to) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "compare");
@@ -3868,13 +3785,12 @@ public class Wiki implements Comparable<Wiki>
                 getparams.put("fromrev", String.valueOf(((Revision)value).getID()));
                 break;
             case "text":
-                postparams.put("fromtext", value);
-                break;
+                getparams.put("fromslots", "main");
+                getparams.put("fromcontentmodel-main", "wikitext");
+                postparams.put("fromtext-main", value);
             default:
                 throw new IllegalArgumentException("From content not specified!");
-        }
-        if (fromsection >= 0)
-            getparams.put("fromsection", String.valueOf(fromsection));
+        }        
 
         entry = to.entrySet().iterator().next();
         value = entry.getValue();
@@ -3897,15 +3813,15 @@ public class Wiki implements Comparable<Wiki>
                 getparams.put("torev", String.valueOf(((Revision)value).getID()));
                 break;
             case "text":
-                postparams.put("totext", value);
+                getparams.put("toslots", "main");
+                getparams.put("tocontentmodel-main", "wikitext");
+                postparams.put("totext-main", value);                
                 break;
             default:
                 throw new IllegalArgumentException("To content not specified!");
         }
-        if (tosection >= 0)
-            postparams.put("tosection", tosection);
 
-        String line = makeHTTPRequest(apiUrl, getparams, postparams, "diff");
+        String line = makeApiCall(getparams, postparams, "diff");
 
         // strip extraneous information
         if (line.contains("</compare>"))
@@ -4054,12 +3970,13 @@ public class Wiki implements Comparable<Wiki>
     {
         // this is a two step process - first we fetch the image url
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "imageinfo");
         getparams.put("iiprop", "url");
         getparams.put("titles", "File:" + removeNamespace(normalize(title)));
         getparams.put("iiurlwidth", String.valueOf(width));
         getparams.put("iiurlheight", String.valueOf(height));
-        String line = makeHTTPRequest(query, getparams, null, "getImage");
+        String line = makeApiCall(getparams, null, "getImage");
         if (!line.contains("<imageinfo>"))
             return false;
         String url2 = parseAttribute(line, "url", 0);
@@ -4098,10 +4015,11 @@ public class Wiki implements Comparable<Wiki>
         // This seems a good candidate for bulk queries.
         // Support for videos is blocked on https://phabricator.wikimedia.org/T89971
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "imageinfo");
         getparams.put("iiprop", "size|sha1|mime|metadata");
         getparams.put("titles", removeNamespace(normalize(file)));
-        String line = makeHTTPRequest(query, getparams, null, "getFileMetadata");
+        String line = makeApiCall(getparams, null, "getFileMetadata");
         if (line.contains("missing=\"\""))
             return null;
         Map<String, Object> metadata = new HashMap<>(30);
@@ -4143,7 +4061,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("prop", "duplicatefiles");
         getparams.put("titles", "File:" + removeNamespace(normalize(file)));
 
-        List<String> duplicates = makeListQuery("df", query, getparams, null, "getDuplicates", (line, results) ->
+        List<String> duplicates = makeListQuery("df", getparams, null, "getDuplicates", -1, (line, results) ->
         {
             if (line.contains("missing=\"\""))
                 return;
@@ -4160,9 +4078,9 @@ public class Wiki implements Comparable<Wiki>
 
     /**
      *  Returns the upload history of an image. This is not the same as
-     *  {@code getLogEntries(null, null, Integer.MAX_VALUE, Wiki.UPLOAD_LOG,
-     *  title, Wiki.FILE_NAMESPACE)}, as the image may have been deleted.
-     *  This returns only the live history of an image.
+     *  {@linkplain #getLogEntries(String, String, Wiki.RequestHelper) fetching
+     *  a page's upload log}, as the image may have been deleted. This returns
+     *  only the live history of an image.
      *
      *  @param title the title of the image (may contain File)
      *  @return the image history of the image
@@ -4177,7 +4095,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("titles", "File:" + removeNamespace(normalize(title)));
 
         String prefixtitle = namespaceIdentifier(FILE_NAMESPACE) + ":" + title;
-        List<LogEntry> history = makeListQuery("ii", query, getparams, null, "getImageHistory", (line, results) ->
+        List<LogEntry> history = makeListQuery("ii", getparams, null, "getImageHistory", -1, (line, results) ->
         {
             if (line.contains("missing=\"\""))
                 return;
@@ -4223,11 +4141,12 @@ public class Wiki implements Comparable<Wiki>
             throw new IllegalArgumentException("You must provide an upload log entry!");
         // no thumbnails for image history, sorry.
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("prop", "imageinfo");
         getparams.put("iilimit", "max");
         getparams.put("iiprop", "timestamp|url|archivename");
         getparams.put("titles", normalize(entry.getTitle()));
-        String line = makeHTTPRequest(query, getparams, null, "getOldImage");
+        String line = makeApiCall(getparams, null, "getOldImage");
 
         // find the correct log entry by comparing timestamps
         // xml form: <ii timestamp="2010-05-23T05:48:43Z" user="Prodego" comment="Match to new version" />
@@ -4259,46 +4178,42 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets the (non-deleted) uploads of a user. Results are sorted in
-     *  chronological order (earliest first).
+     *  Gets the (non-deleted) uploads of a user between the specified times.
+     *  Results are sorted in chronological order.
+     *
+     *  <p>
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
+     *
      *  @param user the user to get uploads for
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return a list of all live images the user has uploaded
      *  @throws IOException if a network error occurs
      *  @since 0.28
      */
-    public LogEntry[] getUploads(User user) throws IOException
+    public List<LogEntry> getUploads(User user, Wiki.RequestHelper helper) throws IOException
     {
-        return getUploads(user, null, null);
-    }
-
-    /**
-     *  Gets the (non-deleted) uploads of a user between the specified times.
-     *  Results are sorted in chronological order (earliest first).
-     *  @param user the user to get uploads for
-     *  @param start the date to start enumeration (use {@code null} to not
-     *  specify one)
-     *  @param end the date to end enumeration (use {@code null} to not specify one)
-     *  @return a list of all live images the user has uploaded
-     *  @throws IllegalArgumentException if <var>start</var> and <var>end</var>
-     *  are present and {@code start.isAfter(end)}
-     *  @throws IOException if a network error occurs
-     */
-    public LogEntry[] getUploads(User user, OffsetDateTime start, OffsetDateTime end) throws IOException
-    {
-        if (start != null && end != null && start.isAfter(end))
-            throw new IllegalArgumentException("Specified start date is after specified end date!");
-
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "allimages");
         getparams.put("aisort", "timestamp");
         getparams.put("aiprop", "timestamp|comment|parsedcomment");
         getparams.put("aiuser", user.getUsername());
-        if (start != null)
-            getparams.put("aistart", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (end != null)
-            getparams.put("aiend", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        int limit = -1;
+        if (helper != null)
+        {
+            helper.setRequestType("ai");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addReverseParameter());
+            limit = helper.limit();
+        }
 
-        List<LogEntry> uploads = makeListQuery("ai", query, getparams, null, "getUploads", (line, results) ->
+        List<LogEntry> uploads = makeListQuery("ai", getparams, null, "getUploads", limit, (line, results) ->
         {
             for (int i = line.indexOf("<img "); i > 0; i = line.indexOf("<img ", ++i))
             {
@@ -4309,9 +4224,8 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        int size = uploads.size();
-        log(Level.INFO, "getUploads", "Successfully retrieved uploads of " + user.getUsername() + " (" + size + " uploads)");
-        return uploads.toArray(new LogEntry[size]);
+        log(Level.INFO, "getUploads", "Successfully retrieved uploads of " + user.getUsername() + " (" + uploads.size() + " uploads)");
+        return uploads;
     }
 
     /**
@@ -4396,7 +4310,7 @@ public class Wiki implements Comparable<Wiki>
                 }
 
                 // done
-                String response = makeHTTPRequest(apiUrl, getparams, postparams, "upload");
+                String response = makeApiCall(getparams, postparams, "upload");
 
                 // look for filekey
                 if (chunks > 1)
@@ -4431,7 +4345,7 @@ public class Wiki implements Comparable<Wiki>
                 postparams.put("comment", reason);
             postparams.put("ignorewarnings", "true");
             postparams.put("filekey", filekey);
-            String response = makeHTTPRequest(apiUrl, getparams, postparams, "upload");
+            String response = makeApiCall(getparams, postparams, "upload");
             checkErrorsAndUpdateStatus(response, "upload");
         }
         log(Level.INFO, "upload", "Successfully uploaded to File:" + filename + ".");
@@ -4486,7 +4400,7 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("text", contents);
         postparams.put("comment", reason);
         postparams.put("url", url.toExternalForm());
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "upload");
+        String response = makeApiCall(getparams, postparams, "upload");
 
         if (response.contains("error code=\"fileexists-shared-forbidden\""))
         {
@@ -4630,6 +4544,7 @@ public class Wiki implements Comparable<Wiki>
         String excludegroup, String rights, boolean activeonly, boolean skipzero) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("list", "allusers");
         String next = "";
         if (prefix.isEmpty())
@@ -4657,7 +4572,7 @@ public class Wiki implements Comparable<Wiki>
         {
             if (!next.isEmpty())
                 getparams.put("aufrom", normalize(next));
-            String line = makeHTTPRequest(query, getparams, null, "allUsers");
+            String line = makeApiCall(getparams, null, "allUsers");
 
             // bail if nonsense groups/rights
             if (line.contains("Unrecognized values for parameter"))
@@ -4742,6 +4657,7 @@ public class Wiki implements Comparable<Wiki>
     public Map<String, Object>[] getUserInfo(String... usernames) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
         getparams.put("list", "users");
         getparams.put("usprop", "editcount|groups|rights|emailable|blockinfo|gender|registration");
         Map<String, Object> postparams = new HashMap<>();
@@ -4749,7 +4665,7 @@ public class Wiki implements Comparable<Wiki>
         for (String fragment : constructTitleString(usernames))
         {
             postparams.put("ususers", fragment);
-            String line = makeHTTPRequest(query, getparams, postparams, "getUserInfo");
+            String line = makeApiCall(getparams, postparams, "getUserInfo");
             String[] results = line.split("<user ");
             for (int i = 1; i < results.length; i++)
             {
@@ -4813,7 +4729,7 @@ public class Wiki implements Comparable<Wiki>
                 info[i].put("inputname", usernames[i]);
             }
         }
-        log(Level.INFO, "getUserInfo", "Successfully retrieved user info for " + Arrays.toString(usernames));
+        log(Level.INFO, "getUserInfo", "Successfully retrieved user info for " + usernames.length + " users.");
         return info;
     }
 
@@ -4826,24 +4742,6 @@ public class Wiki implements Comparable<Wiki>
     public User getCurrentUser()
     {
         return user;
-    }
-
-    /**
-     *  Gets the contributions of a user, IP address or range of IP addresses
-     *  in a particular namespace. Equivalent to [[Special:Contributions]]. Be
-     *  careful when using this method on large wikis because more than 100000
-     *  edits may be returned for certain values of <var>user</var>.
-     *
-     *  @param user the user, IP or IP range to get contributions for
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return contributions of this user, or a zero-length array if the user
-     *  does not exist
-     *  @throws IOException if a network error occurs
-     *  @since 0.17
-     */
-    public Revision[] contribs(String user, int... ns) throws IOException
-    {
-        return contribs(user, null, null, ns);
     }
 
     /**
@@ -4862,7 +4760,7 @@ public class Wiki implements Comparable<Wiki>
      *  @deprecated As of MediaWiki 1.31, you can call {@code contribs(range)}.
      */
     @Deprecated
-    public Revision[] rangeContribs(String range) throws IOException
+    public List<Revision> rangeContribs(String range) throws IOException
     {
         String[] parts = range.split("/");
         String ip = parts[0];
@@ -4899,44 +4797,40 @@ public class Wiki implements Comparable<Wiki>
                     contribuser.append(".");
             }
         }
-        return prefixContribs(contribuser.toString(), null, null);
+        return prefixContribs(contribuser.toString(), null);
     }
 
     /**
-     *  Gets contributions for all users starting with <var>prefix</var>. Be
-     *  careful when using this method on large wikis as
+     *  Gets contributions for all users starting with <var>prefix</var>. See
+     *  {@link #contribs(List, String, RequestHelper)} for full documentation.
+     *
      *  @param prefix a prefix of usernames.
-     *  @param start fetch edits no newer than this date
-     *  @param end fetch edits no older than this date
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any optional parameters)
      *  @return contributions of users with this prefix
      *  @throws IOException if a network error occurs
      */
-    public Revision[] prefixContribs(String prefix, OffsetDateTime end, OffsetDateTime start, int... ns) throws IOException
+    public List<Revision> prefixContribs(String prefix, Wiki.RequestHelper helper) throws IOException
     {
-        List<Revision> list = contribs(new String[0], prefix, end, start, null, ns)[0];
-        return list.toArray(new Revision[list.size()]);
+        return contribs(Collections.emptyList(), prefix, helper).get(0);
     }
 
     /**
      *  Gets the contributions for a user, an IP address or a range of IP
-     *  addresses. Equivalent to [[Special:Contributions]]. Be
-     *  careful when using this method on large wikis because more than 100000
-     *  edits may be returned for certain values of <var>user</var>.
+     *  addresses. See {@link #contribs(List, String, RequestHelper)} for full
+     *  documentation.
      *
      *  @param user the user, IP address or IP range to get contributions for
-     *  @param start fetch edits no newer than this date
-     *  @param end fetch edits no older than this date
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return contributions of this user, or a zero-length array if the user
-     *  does not exist
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any optional parameters)
+     *  @return contributions of this user, or an empty list if the user does
+     *  not exist
      *  @throws IOException if a network error occurs
      *  @since 0.17
      */
-    public Revision[] contribs(String user, OffsetDateTime end, OffsetDateTime start, int... ns) throws IOException
+    public List<Revision> contribs(String user, Wiki.RequestHelper helper) throws IOException
     {
-        List<Revision> list = contribs(new String[] { user }, "", end, start, null, ns)[0];
-        return list.toArray(new Revision[list.size()]);
+        return contribs(Arrays.asList(user), null, helper).get(0);
     }
 
     /**
@@ -4946,56 +4840,44 @@ public class Wiki implements Comparable<Wiki>
      *  than 100000 edits may be returned for certain values of <var>users</var>.
      *
      *  <p>
-     *  Available keys for <var>options</var> include "minor", "top", "new" and
-     *  "patrolled" for vanilla MediaWiki (extensions may define their own).their own).
-     *  For example, {@code options = { top = true, new = true }} returns all
-     *  edits by a user that created pages which haven't been edited since.
-     *  Setting "patrolled" limits results to no older than <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">retention</a> in
-     *  the <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
-     *  table</a>.
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#inNamespaces(int...) namespaces}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  <li>{@link Wiki.RequestHelper#filterBy(Map) filter by}: "minor", "top", 
+     *  "new", "patrolled"
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
      *
      *  @param users a list of users, IP addresses or IP ranges to get
      *  contributions for
-     *  @param start fetch edits no newer than this date
-     *  @param end fetch edits no older than this date
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @param prefix a prefix of usernames. Overrides <var>users</var>. Use ""
+     *  @param prefix a prefix of usernames. Overrides <var>users</var>. Use null
      *  to not specify one.
-     *  @param options a Map dictating which revisions to select. Key not present
-     *  = don't care.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return contributions of <var>users</var> in the same order as
-     *  <var>users</var>, or a zero-length array where the user does not exist
+     *  <var>users</var>, or an empty list where the user does not exist
      *  @throws IOException if a network error occurs
      *  @since 0.34
      */
-    public List<Revision>[] contribs(String[] users, String prefix, OffsetDateTime end, OffsetDateTime start,
-        Map<String, Boolean> options, int... ns) throws IOException
+    public List<List<Revision>> contribs(List<String> users, String prefix, Wiki.RequestHelper helper) throws IOException
     {
-        // end refers to the *oldest* allowable edit and vice versa
-        if (start != null && end != null && start.isBefore(end))
-            throw new IllegalArgumentException("Specified start date is before specified end date!");
-
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "usercontribs");
         getparams.put("ucprop", "title|timestamp|flags|comment|parsedcomment|ids|size|sizediff|sha1");
-        if (end != null)
-            getparams.put("ucend", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (start != null)
-            getparams.put("ucstart", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (ns.length > 0)
-            getparams.put("ucnamespace", constructNamespaceString(ns));
-        if (options != null && !options.isEmpty())
+        if (helper != null)
         {
-            StringBuilder temp = new StringBuilder();
-            options.forEach((key, value) ->
-            {
-                if (Boolean.FALSE.equals(value))
-                    temp.append('!');
-                temp.append(key);
-                temp.append("|");
-            });
-            getparams.put("ucshow", temp.substring(0, temp.length() - 1));
+            helper.setRequestType("uc");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addNamespaceParameter());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addTagParameter());
+            getparams.putAll(helper.addShowParameter());
+            limit = helper.limit();
         }
 
         BiConsumer<String, List<Revision>> parser = (line, results) ->
@@ -5012,34 +4894,35 @@ public class Wiki implements Comparable<Wiki>
         {
             Map<String, Object> postparams = new HashMap<>();
             List<Revision> revisions = new ArrayList<>();
-            for (String userstring : constructTitleString(users))
+            for (String userstring : constructTitleString(users.toArray(new String[0])))
             {
                 postparams.put("ucuser", userstring);
-                revisions.addAll(makeListQuery("uc", query, getparams, postparams, "contribs", parser));
+                revisions.addAll(makeListQuery("uc", getparams, postparams, "contribs", limit, parser));
             }
             // group and reorder
             // implementation note: the API does not distinguish between users/IPs
             // with zero edits and users that do not exist
-            List<Revision>[] ret = new ArrayList[users.length];
-            Arrays.setAll(ret, ArrayList::new);
-            revisions.forEach(revision ->
+            List<List<Revision>> ret = new ArrayList<>();
+            List<String> normusers = new ArrayList<>();
+            for (String localuser : users)
             {
-                for (int i = 0; i < users.length; i++)
-                    if (normalize(users[i]).equals(revision.getUser()))
-                        ret[i].add(revision);
-            });
-            log(Level.INFO, "contribs", "Successfully retrived contributions for " + Arrays.toString(users));
+                normusers.add(normalize(localuser));
+                ret.add(new ArrayList<>());
+            }
+            for (Wiki.Revision revision : revisions)
+                for (int i = 0; i < users.size(); i++)
+                    if (normusers.get(i).equals(revision.getUser()))
+                        ret.get(i).add(revision);
+
+            log(Level.INFO, "contribs", "Successfully retrived contributions for " + users.size() + " users.");
             return ret;
         }
         else
         {
             getparams.put("ucuserprefix", prefix);
-            List<Revision> revisions = makeListQuery("uc", query, getparams, null, "contribs", parser);
-            int size = revisions.size();
-            log(Level.INFO, "prefixContribs", "Successfully retrived contributions for " + prefix + " (" + size + " edits)");
-            List<Revision>[] ret = new ArrayList[1];
-            ret[0] = revisions;
-            return ret;
+            List<Revision> revisions = makeListQuery("uc", getparams, null, "contribs", limit, parser);
+            log(Level.INFO, "prefixContribs", "Successfully retrived prefix contributions (" + revisions.size() + " edits)");
+            return Arrays.asList(revisions);
         }
     }
 
@@ -5086,7 +4969,7 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("ccme", "1");
         postparams.put("text", message);
         postparams.put("subject", subject);
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "emailUser");
+        String response = makeApiCall(getparams, postparams, "emailUser");
 
         // check for errors
         checkErrorsAndUpdateStatus(response, "email");
@@ -5154,7 +5037,7 @@ public class Wiki implements Comparable<Wiki>
                     postparams.put(key, "1");
             });
         }
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "block");
+        String response = makeApiCall(getparams, postparams, "block");
 
         // done
         if (!response.contains("<block "))
@@ -5186,7 +5069,7 @@ public class Wiki implements Comparable<Wiki>
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "unblock");
+        String response = makeApiCall(getparams, postparams, "unblock");
 
         // done
         if (!response.contains("<unblock "))
@@ -5238,7 +5121,7 @@ public class Wiki implements Comparable<Wiki>
             throw new IllegalArgumentException("Supplied dates must be in the future!");
         if (user == null)
             throw new SecurityException("You need to be logged in to change user privileges.");
-        
+
         // warn for ignored groups
         List<String> groups = u.getGroups();
         List<String> alreadyhas = new ArrayList<>(groups);
@@ -5262,7 +5145,7 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("add", granted);
         postparams.put("expiry", numexpirydates == 0 ? "indefinite" : expiry);
         postparams.put("remove", revoked);
-        String response = makeHTTPRequest(apiUrl, getparams, postparams, "changeUserPrivileges");
+        String response = makeApiCall(getparams, postparams, "changeUserPrivileges");
         if (!response.contains("<userrights "))
             checkErrorsAndUpdateStatus(response, "changeUserPrivileges");
         log(Level.INFO, "changeUserPrivileges", "Successfully changed privileges of user " + u.getUsername());
@@ -5327,7 +5210,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", titlestring);
             postparams.put("token", getToken("watch"));
-            makeHTTPRequest(apiUrl, getparams, postparams, state);
+            makeApiCall(getparams, postparams, state);
         }
         log(Level.INFO, state, "Successfully " + state + "ed " + Arrays.toString(titles));
     }
@@ -5368,7 +5251,7 @@ public class Wiki implements Comparable<Wiki>
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "watchlistraw");
 
-        watchlist = makeListQuery("wr", query, getparams, null, "getRawWatchlist", (line, results) ->
+        watchlist = makeListQuery("wr", getparams, null, "getRawWatchlist", -1, (line, results) ->
         {
             // xml form: <wr ns="14" title="Categorie:Even more things"/>
             for (int a = line.indexOf("<wr "); a > 0; a = line.indexOf("<wr ", ++a))
@@ -5403,71 +5286,56 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Fetches the most recent changes to pages on your watchlist. Data is
-     *  retrieved from the <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">
-     *  recentchanges table</a> and hence cannot be retrieved after <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">a certain amount
-     *  of time</a>.
-     *
-     *  @return list of changes to watched pages and their talk pages
-     *  @throws IOException if a network error occurs
-     *  @throws SecurityException if not logged in
-     *  @since 0.27
-     */
-    public Revision[] watchlist() throws IOException
-    {
-        return watchlist(null);
-    }
-
-    /**
      *  Fetches recent changes to pages on your watchlist. Data is
      *  retrieved from the <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">
      *  recentchanges table</a> and hence cannot be retrieved after <a
      *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">a certain amount
      *  of time</a>.
-     *  <p>
-     *  Available keys for <var>options</var> include "minor", "bot", "anon",
-     *  "patrolled", "top" and "unread" for vanilla MediaWiki (extensions may
-     *  define their own). {@code options = { minor = true;, bot = false }}
-     *  returns all minor edits not made by bots.
      *
-     *  @param options a Map dictating which revisions to select. Key not present
-     *  = don't care.
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
+     *  <p>
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#inNamespaces(int...) namespaces}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#notByUser(String) not by user}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#filterBy(Map) filter by}: "minor", "bot", 
+     *  "anon", "patrolled", "top", "unread"
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
+     *
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @return list of changes to watched pages and their talk pages
      *  @throws IOException if a network error occurs
      *  @throws SecurityException if not logged in
+     *  @see <a href="https://www.mediawiki.org/wiki/API:Watchlist">MediaWiki
+     *  documentation</a>
      *  @since 0.27
      */
-    public Revision[] watchlist(Map<String, Boolean> options, int... ns) throws IOException
+    public List<Revision> watchlist(Wiki.RequestHelper helper) throws IOException
     {
         if (user == null)
             throw new SecurityException("Not logged in");
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "watchlist");
         getparams.put("wlprop", "ids|title|timestamp|user|comment|parsedcomment|sizes");
-        if (ns.length > 0)
-            getparams.put("wlnamespace", constructNamespaceString(ns));
-        if (options != null)
+        int limit = -1;
+        if (helper != null)
         {
-            Boolean top = options.remove("top");
-            if (Boolean.TRUE.equals(top))
-                getparams.put("wlallrev", "1");
-            if (!options.isEmpty())
-            {
-                StringBuilder temp = new StringBuilder();
-                options.forEach((key, value) ->
-                {
-                    if (Boolean.FALSE.equals(value))
-                        temp.append('!');
-                    temp.append(key);
-                    temp.append("|");
-                });
-                getparams.put("wlshow", temp.substring(0, temp.length() - 1));
-            }
+            helper.setRequestType("wl");
+            helper.addDateRangeParameters();
+            helper.addNamespaceParameter();
+            helper.addUserParameter();
+            helper.addExcludeUserParameter();
+            helper.addReverseParameter();
+            helper.addShowParameter();
+            limit = helper.limit();
         }
 
-        List<Revision> wl = makeListQuery("wl", query, getparams, null, "watchlist", (line, results) ->
+        List<Revision> wl = makeListQuery("wl", getparams, null, "watchlist", limit, (line, results) ->
         {
             // xml form: <item pageid="16396" revid="176417" ns="0" title="API:Query - Lists" />
             for (int i = line.indexOf("<item "); i > 0; i = line.indexOf("<item ", ++i))
@@ -5477,9 +5345,8 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        int size = wl.size();
-        log(Level.INFO, "watchlist", "Successfully retrieved watchlist (" + size + " items)");
-        return wl.toArray(new Revision[size]);
+        log(Level.INFO, "watchlist", "Successfully retrieved watchlist (" + wl.size() + " items)");
+        return wl;
     }
 
     // LISTS
@@ -5521,7 +5388,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("srsearch", search);
         getparams.put("srnamespace", constructNamespaceString(namespaces));
 
-        List<Map<String, Object>> results = makeListQuery("sr", query, getparams, null, "search", (line, list) ->
+        List<Map<String, Object>> results = makeListQuery("sr", getparams, null, "search", -1, (line, list) ->
         {
             // xml form: <p ns="0" title="Main Page" snippet="Blah blah blah" sectiontitle="Section"/>
             for (int x = line.indexOf("<p "); x > 0; x = line.indexOf("<p ", ++x))
@@ -5563,7 +5430,7 @@ public class Wiki implements Comparable<Wiki>
         if (ns.length > 0)
             getparams.put("iunamespace", constructNamespaceString(ns));
 
-        List<String> pages = makeListQuery("iu", query, getparams, null, "imageUsage", (line, results) ->
+        List<String> pages = makeListQuery("iu", getparams, null, "imageUsage", -1, (line, results) ->
         {
             // xml form: <iu pageid="196465" ns="7" title="File talk:Wiki.png" />
             for (int x = line.indexOf("<iu "); x > 0; x = line.indexOf("<iu ", ++x))
@@ -5613,7 +5480,7 @@ public class Wiki implements Comparable<Wiki>
         if (redirects)
             getparams.put("blfilterredir", "redirects");
 
-        List<String> pages = makeListQuery("bl", query, getparams, null, "whatLinksHere", (line, results) ->
+        List<String> pages = makeListQuery("bl", getparams, null, "whatLinksHere", -1, (line, results) ->
         {
             // xml form: <bl pageid="217224" ns="0" title="Mainpage" redirect="" />
             for (int x = line.indexOf("<bl "); x > 0; x = line.indexOf("<bl ", ++x))
@@ -5643,7 +5510,7 @@ public class Wiki implements Comparable<Wiki>
         if (ns.length > 0)
             getparams.put("einamespace", constructNamespaceString(ns));
 
-        List<String> pages = makeListQuery("ei", query, getparams, null, "whatTranscludesHere", (line, results) ->
+        List<String> pages = makeListQuery("ei", getparams, null, "whatTranscludesHere", -1, (line, results) ->
         {
             // xml form: <ei pageid="7997510" ns="0" title="Maike Evers" />
             for (int x = line.indexOf("<ei "); x > 0; x = line.indexOf("<ei ", ++x))
@@ -5656,12 +5523,81 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
+     *  Gets the number of pages in the list of given catgories without
+     *  {@linkplain #getCategoryMembers(String, int...) performing a full lookup
+     *  of category members}. This is equivalent to the <kbd>{{PAGESINCATEGORY}}</kbd>
+     *  parser function. The input order is the same as the return order.
+     *
+     *  @param categories a list of categories (with or without Category: prefix)
+     *  @return an array for each category, where the first entry = total number
+     *  of pages, second = number of normal pages, third = number of files and
+     *  fourth = number of subcategories
+     *  @throws IOException if a network error occurs
+     *  @since 0.36
+     *  @see <a href="https://mediawiki.org/wiki/API:Categoryinfo">MediaWiki
+     *  documentation</a>
+     */
+    public List<int[]> getCategoryMemberCounts(List<String> categories) throws IOException
+    {
+        // force all titles to have namespace(title) == CATEGORY_NAMESPACE because
+        // the API requires it
+        List<String> norm_cats = new ArrayList<>();
+        String catns = namespaceIdentifier(CATEGORY_NAMESPACE);
+        for (String category : categories)
+        {
+            if (namespace(category) != CATEGORY_NAMESPACE)
+                norm_cats.add(catns + ":" + category);
+            else
+                norm_cats.add(category);
+        }
+
+        Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "query");
+        getparams.put("prop", "categoryinfo");
+        Map<String, Object> postparams = new HashMap<>();
+        Map<String, int[]> metamap = new HashMap<>();
+        for (String titlestring : constructTitleString(norm_cats.toArray(new String[0])))
+        {
+            postparams.put("titles", titlestring);
+            String result = makeApiCall(getparams, postparams, "getCategoryMemberCount");
+            // no redirect resolution, because category members don't follow redirects
+
+            // form: <page _idx="2504643" pageid="2504643" ns="14" title="Category:Albert Einstein">
+            // <categoryinfo size="95" pages="87" files="0" subcats="8" />
+            // </page>
+            for (int j = result.indexOf("<page "); j > 0; j = result.indexOf("<page ", ++j))
+            {
+                int x = result.indexOf("</page>", j);
+                String item = result.substring(j, x);
+                boolean exists = !item.contains("missing=\"\"");
+                int[] values = new int[4];
+                if (exists)
+                {
+                    values[0] = Integer.parseInt(parseAttribute(item, "size", 0));
+                    values[1] = Integer.parseInt(parseAttribute(item, "pages", 0));
+                    values[2] = Integer.parseInt(parseAttribute(item, "files", 0));
+                    values[3] = Integer.parseInt(parseAttribute(item, "subcats", 0));
+                }
+                String parsedtitle = parseAttribute(item, "title", 0);
+                metamap.put(parsedtitle, values);
+            }
+        }
+
+        // reorder
+        List<int[]> ret = new ArrayList<>();
+        for (String category : norm_cats)
+            ret.add(metamap.get(normalize(category)));
+        log(Level.INFO, "getCategoryMemberCounts", "Successfully retrieved category member counts for " + categories.size() + " categories.");
+        return ret;
+    }
+
+    /**
      *  Gets the members of a category, sorted as in the UI.
      *
      *  @param name the name of the category (with or without namespace attached)
      *  @param ns a list of namespaces to filter by, empty = all namespaces.
      *  @return a String[] containing page titles of members of the category
-     *  @throws IOException or UncheckedIOException if a network error occurs
+     *  @throws IOException if a network error occurs
      *  @since 0.03
      */
     public String[] getCategoryMembers(String name, int... ns) throws IOException
@@ -5743,7 +5679,7 @@ public class Wiki implements Comparable<Wiki>
             getparams.put("cmnamespace", constructNamespaceString(ns));
         final boolean nocat2 = nocat;
 
-        List<String> members = makeListQuery("cm", query, getparams, null, "getCategoryMembers", (line, results) ->
+        List<String> members = makeListQuery("cm", getparams, null, "getCategoryMembers", -1, (line, results) ->
         {
             try
             {
@@ -5798,12 +5734,12 @@ public class Wiki implements Comparable<Wiki>
      *  Searches the wiki for external links. Equivalent to [[Special:Linksearch]].
      *  Returns a list of pairs, where the first item is a page and the second
      *  the relevant url. Wildcards (*) are only permitted at the start of the
-     *  search string. 
-     * 
+     *  search string.
+     *
      *  <p><b>Warnings:</b>
      *  <ul>
-     *  <li>Searching by namespace with a query limit won't return that many 
-     *      results if <a href="https://mediawiki.org/wiki/Manual:$wgMiserMode">$wgMiserMode 
+     *  <li>Searching by namespace with a query limit won't return that many
+     *      results if <a href="https://mediawiki.org/wiki/Manual:$wgMiserMode">$wgMiserMode
      *      is enabled</a>. This is the case for most large wikis.
      *  </ul>
      *
@@ -5834,7 +5770,7 @@ public class Wiki implements Comparable<Wiki>
         if (ns.length > 0)
             getparams.put("eunamespace", constructNamespaceString(ns));
 
-        List<String[]> links = makeListQuery("eu", query, getparams, null, "linksearch", (line, results) ->
+        List<String[]> links = makeListQuery("eu", getparams, null, "linksearch", -1, (line, results) ->
         {
             // xml form: <eu ns="0" title="Main Page" url="http://example.com" />
             for (int x = line.indexOf("<eu"); x > 0; x = line.indexOf("<eu ", ++x))
@@ -5853,67 +5789,43 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Looks up a particular user in the list of current blocks, i.e. whether
-     *  a user is currently blocked. Equivalent to [[Special:BlockList]].
-     *
-     *  @param user a username or IP (e.g. "127.0.0.1")
-     *  @return the block log entry
-     *  @throws IOException if a network error occurs
-     *  @since 0.12
-     */
-    public LogEntry[] getBlockList(String user) throws IOException
-    {
-        return getBlockList(user, null, null);
-    }
-
-    /**
-     *  Lists currently operating blocks that were made in the specified
-     *  interval. Equivalent to [[Special:BlockList]].
-     *
-     *  @param start the start date
-     *  @param end the end date
-     *  @return the currently operating blocks that were made in that interval
-     *  @throws IOException if a network error occurs
-     *  @since 0.12
-     */
-    public LogEntry[] getBlockList(OffsetDateTime start, OffsetDateTime end) throws IOException
-    {
-        return getBlockList("", start, end);
-    }
-
-    /**
      *  Fetches part of the list of currently operational blocks. Equivalent to
      *  [[Special:BlockList]]. WARNING: cannot tell whether a particular IP
      *  is autoblocked as this is non-public data (see [[wmf:Privacy policy]]).
-     *  Don't call this directly, use one of the two above methods instead.
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
      *
-     *  @param user a particular user that might have been blocked. Use "" to
+     *  @param user a particular user that might have been blocked. Use null to
      *  not specify one. May be an IP (e.g. "127.0.0.1") or a CIDR range (e.g.
      *  "127.0.0.0/16") but not an autoblock (e.g. "#123456").
-     *  @param start what timestamp to start. Use null to not specify one.
-     *  @param end what timestamp to end. Use null to not specify one.
-     *  @return a LogEntry[] of the blocks
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
+     *  @return a list of the blocks
      *  @throws IOException or UncheckedIOException if a network error occurs
-     *  @throws IllegalArgumentException if start date is before end date
      *  @since 0.12
      */
-    protected LogEntry[] getBlockList(String user, OffsetDateTime start, OffsetDateTime end) throws IOException
+    public List<LogEntry> getBlockList(String user, Wiki.RequestHelper helper) throws IOException
     {
-        // quick param check
-        if (start != null && end != null && start.isBefore(end))
-            throw new IllegalArgumentException("Specified start date is before specified end date!");
-
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "blocks");
-        if (end != null)
-            getparams.put("bkend", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (start != null)
-            getparams.put("bkstart", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        if (!user.isEmpty())
+        if (helper != null)
+        {
+            helper.setRequestType("bk");
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addReverseParameter());
+            limit = helper.limit();
+        }
+        if (user != null)
             getparams.put("bkusers", normalize(user));
 
         // connection
-        List<LogEntry> entries = makeListQuery("bk", query, getparams, null, "getIPBlockList", (line, results) ->
+        List<LogEntry> entries = makeListQuery("bk", getparams, null, "getIPBlockList", limit, (line, results) ->
         {
             // XML form: <block id="7844197" user="223.205.208.198" by="ProcseeBot"
             // timestamp="2017-09-24T07:17:08Z" expiry="2017-11-23T07:17:08Z"
@@ -5937,106 +5849,41 @@ public class Wiki implements Comparable<Wiki>
             }
         });
 
-        // log statement
-        StringBuilder logRecord = new StringBuilder("Successfully fetched IP block list ");
-        if (!user.isEmpty())
-        {
-            logRecord.append(" for ");
-            logRecord.append(user);
-        }
-        if (start != null)
-        {
-            logRecord.append(" from ");
-            logRecord.append(start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        }
-        if (end != null)
-        {
-            logRecord.append(" to ");
-            logRecord.append(end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        }
-        int size = entries.size();
-        logRecord.append(" (");
-        logRecord.append(size);
-        logRecord.append(" entries)");
-        log(Level.INFO, "getIPBlockList", logRecord.toString());
-        return entries.toArray(new LogEntry[size]);
-    }
-
-    /**
-     *  Gets the log entries representing actions that were performed on a
-     *  specific target. Equivalent to [[Special:Log]].
-     *  @param logtype what log to get (e.g. {@link #DELETION_LOG})
-     *  @param action what action to get (e.g. delete, undelete, etc.), use
-     *  null to not specify one
-     *  @param user the user performing the action. Use null not to specify
-     *  one.
-     *  @param target the target of the action(s).
-     *  @throws IOException if a network error occurs
-     *  @throws SecurityException if the user lacks the credentials needed to
-     *  access a privileged log
-     *  @return the specified log entries
-     *  @since 0.08
-     */
-    public LogEntry[] getLogEntries(String logtype, String action, String user, String target) throws IOException
-    {
-        return getLogEntries(logtype, action, user, target, null, null, Integer.MAX_VALUE, ALL_NAMESPACES);
-    }
-
-    /**
-     *  Gets the last how ever many log entries in the specified log. Equivalent
-     *  to [[Special:Log]] and [[Special:Newimages]] when
-     *  {@code type.equals({@link #UPLOAD_LOG})}.
-     *
-     *  @param logtype what log to get (e.g. {@link #DELETION_LOG})
-     *  @param action what action to get (e.g. delete, undelete, etc.), use
-     *  {@code null} to not specify one
-     *  @param amount the number of entries to get (overrides global limits)
-     *  @throws IOException if a network error occurs
-     *  @throws SecurityException if the user lacks the credentials needed to
-     *  access a privileged log
-     *  @throws IllegalArgumentException if the log type doesn't exist
-     *  @return the specified log entries
-     */
-    public LogEntry[] getLogEntries(String logtype, String action, int amount) throws IOException
-    {
-        return getLogEntries(logtype, action, null, null, null, null, amount, ALL_NAMESPACES);
+        log(Level.INFO, "getBlockList", "Successfully fetched block list " + entries.size() + " entries)");
+        return entries;
     }
 
     /**
      *  Gets the specified amount of log entries between the given times by
      *  the given user on the given target. Equivalent to [[Special:Log]].
-     *  WARNING: the start date is the most recent of the dates given, and
-     *  the order of enumeration is from newest to oldest.
+     *  Accepted parameters from <var>helper</var> are:
+     *
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#byTitle(String) title}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#inNamespaces(int...) namespaces} (one
+     *      namespace only, must not be used if a title is specified)
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
      *
      *  @param logtype what log to get (e.g. {@link #DELETION_LOG})
      *  @param action what action to get (e.g. delete, undelete, etc.), use
      *  {@code null} to not specify one
-     *  @param user the user performing the action. Use {@code null} not to specify
-     *  one.
-     *  @param target the target of the action. Use {@code null} not to specify one.
-     *  @param start what timestamp to start. Use {@code null} to not specify one.
-     *  @param end what timestamp to end. Use {@code null} to not specify one.
-     *  @param amount the amount of log entries to get. If both start and
-     *  end are defined, this is ignored. Use {@code Integer.MAX_VALUE} to not
-     *  specify one (overrides global limits)
-     *  @param namespace filters by namespace. Returns empty if namespace
-     *  doesn't exist. Use {@link #ALL_NAMESPACES} to not specify one. Must not
-     *  be used with target.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters noted above)
      *  @throws IOException if a network error occurs
-     *  @throws IllegalArgumentException if {@code start.isAfter(end)}
-     *  or {@literal amount < 1}
      *  @throws SecurityException if the user lacks the credentials needed to
      *  access a privileged log
      *  @return the specified log entries
      *  @since 0.08
      */
-    public LogEntry[] getLogEntries(String logtype, String action, String user, String target,
-        OffsetDateTime start, OffsetDateTime end, int amount, int namespace) throws IOException
+    public List<LogEntry> getLogEntries(String logtype, String action, Wiki.RequestHelper helper) throws IOException
     {
-        // check for amount
-        if (amount < 1)
-            throw new IllegalArgumentException("Tried to retrieve less than one log entry!");
-
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "logevents");
         getparams.put("leprop", "ids|title|type|user|timestamp|comment|parsedcomment|details");
@@ -6047,24 +5894,19 @@ public class Wiki implements Comparable<Wiki>
             else
                 getparams.put("leaction", logtype + "/" + action);
         }
-        if (namespace != ALL_NAMESPACES)
-            getparams.put("lenamespace", String.valueOf(namespace));
-        if (user != null)
-            getparams.put("leuser", normalize(user));
-        if (target != null)
-            getparams.put("letitle", normalize(target));
-        if (start != null)
+        if (helper != null)
         {
-            if (end != null && start.isBefore(end)) //aargh
-                throw new IllegalArgumentException("Specified start date is before specified end date!");
-            getparams.put("lestart", start.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+            helper.setRequestType("le");
+            getparams.putAll(helper.addTitleParameter());
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addUserParameter());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addNamespaceParameter());
+            getparams.putAll(helper.addTagParameter());
+            limit = helper.limit();
         }
-        if (end != null)
-            getparams.put("leend", end.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
 
-        int originallimit = getQueryLimit();
-        setQueryLimit(Math.min(amount, originallimit));
-        List<LogEntry> entries = makeListQuery("le", query, getparams, null, "getLogEntries", (line, results) ->
+        List<LogEntry> entries = makeListQuery("le", getparams, null, "getLogEntries", limit, (line, results) ->
         {
             String[] items = line.split("<item ");
             for (int i = 1; i < items.length; i++)
@@ -6073,17 +5915,15 @@ public class Wiki implements Comparable<Wiki>
                 results.add(le);
             }
         });
-        setQueryLimit(originallimit);
 
         // log the success
         StringBuilder console = new StringBuilder("Successfully retrieved log (type=");
         console.append(logtype);
-        int size = entries.size();
         console.append(", ");
-        console.append(size);
+        console.append(entries.size());
         console.append(" entries)");
         log(Level.INFO, "getLogEntries", console.toString());
-        return entries.toArray(new LogEntry[size]);
+        return entries;
     }
 
     /**
@@ -6368,16 +6208,15 @@ public class Wiki implements Comparable<Wiki>
 
         // set query limit = 1 request if max, min, prefix or protection level
         // not specified
-        int originallimit = getQueryLimit();
+        int limit = -1;
         if (maximum < 0 && minimum < 0 && prefix.isEmpty() && protectionstate == null)
-            setQueryLimit(max);
-        List<String> pages = makeListQuery("ap", query, getparams, null, "listPages", (line, results) ->
+            limit = max;
+        List<String> pages = makeListQuery("ap", getparams, null, "listPages", limit, (line, results) ->
         {
             // xml form: <p pageid="1756320" ns="0" title="Kre'fey" />
             for (int a = line.indexOf("<p "); a > 0; a = line.indexOf("<p ", ++a))
                 results.add(parseAttribute(line, "title", a));
         });
-        setQueryLimit(originallimit);
 
         int size = pages.size();
         log(Level.INFO, "listPages", "Successfully retrieved page list (" + size + " pages)");
@@ -6386,10 +6225,10 @@ public class Wiki implements Comparable<Wiki>
 
     /**
      *  Fetches data from one of a set of miscellaneous special pages.
-     *  
+     *
      *  <p><b>Warnings:</b>
      *  <ul>
-     *  <li>Many reports may be cached, limited and/or disabled if <a 
+     *  <li>Many reports may be cached, limited and/or disabled if <a
      *      href="https://mediawiki.org/wiki/Manual:$wgMiserMode">$wgMiserMode
      *      is enabled</a>. This is the case for most large wikis.
      *  </ul>
@@ -6401,8 +6240,8 @@ public class Wiki implements Comparable<Wiki>
      *  @throws SecurityException if the user lacks the privileges necessary to
      *  view a report (e.g. unwatchedpages)
      *  @since 0.28
-     *  @see <a href="https://mediawiki.org/w/api.php?action=help&modules=query%2Bquerypage">
-     *  MediaWiki documentation</a>
+     *  @see <a href="https://mediawiki.org/wiki/API:Querypage">MediaWiki
+     *  documentation</a>
      */
     public String[] queryPage(String page) throws IOException
     {
@@ -6410,7 +6249,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("list", "querypage");
         getparams.put("qppage", page);
 
-        List<String> pages = makeListQuery("qp", query, getparams, null, "queryPage", (line, results) ->
+        List<String> pages = makeListQuery("qp", getparams, null, "queryPage", -1, (line, results) ->
         {
             // xml form: <page value="0" ns="0" title="Anorthosis Famagusta FC in European football" />
             for (int x = line.indexOf("<page "); x > 0; x = line.indexOf("<page ", ++x))
@@ -6423,253 +6262,91 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Fetches the <var>amount</var> most recently created pages in the main
-     *  namespace. WARNING: The <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">
-     *  recentchanges table</a> stores new pages for a <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">finite period of time</a>;
-     *  it is not possible to retrieve pages created before then.
+     *  Fetches recently created pages. See {@link #recentChanges(Wiki.RequestHelper,
+     *  boolean)} for full documentation. Equivalent to [[Special:Newpages]].
      *
-     *  @param amount the number of pages to fetch (overrides global query
-     *  limits)
-     *  @return the revisions that created the pages satisfying the requirements
-     *  above
-     *  @throws IOException if a network error occurs
-     *  @since 0.20
-     */
-    public Revision[] newPages(int amount) throws IOException
-    {
-        return recentChanges(amount, null, true, MAIN_NAMESPACE);
-    }
-
-    /**
-     *  Fetches the <var>amount</var> most recently created pages in the main
-     *  namespace subject to the specified constraints. WARNING: The <a
-     *  href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
-     *  table</a> stores new pages for a <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">finite period of
-     *  time</a>; it is not possible to retrieve pages created before then.
-     *  Equivalent to [[Special:Newpages]].
-     *
-     *  @param rcoptions a bitmask of {@link #HIDE_ANON} etc that dictate which
-     *  pages we return (e.g. to exclude patrolled pages set rcoptions = HIDE_PATROLLED).
-     *  @param amount the amount of new pages to get (overrides global query
-     *  limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return the revisions that created the pages satisfying the requirements
-     *  above
-     *  @throws IOException if a network error occurs
-     *  @since 0.20
-     *  @deprecated use rcoptions as a Map instead
-     */
-    @Deprecated
-    public Revision[] newPages(int amount, int rcoptions, int... ns) throws IOException
-    {
-        Map<String, Boolean> newoptions = new HashMap<>();
-        if (rcoptions > 0)
-        {
-            if ((rcoptions & HIDE_ANON) == HIDE_ANON)
-                newoptions.put("anon", false);
-            if ((rcoptions & HIDE_SELF) == HIDE_SELF)
-                newoptions.put("self", false);
-            if ((rcoptions & HIDE_MINOR) == HIDE_MINOR)
-                newoptions.put("minor", false);
-            if ((rcoptions & HIDE_PATROLLED) == HIDE_PATROLLED)
-                newoptions.put("patrolled", false);
-            if ((rcoptions & HIDE_BOT) == HIDE_BOT)
-                newoptions.put("bot", false);
-        }
-        return recentChanges(amount, newoptions, true, ns);
-    }
-
-    /**
-     *  Fetches the <var>amount</var> most recently created pages in the main
-     *  namespace subject to the specified constraints. WARNING: The <a
-     *  href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
-     *  table</a> stores new pages for a <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">finite period of
-     *  time</a>; it is not possible to retrieve pages created before then.
-     *  Equivalent to [[Special:Newpages]].
-     *
-     *  <p>
-     *  Available keys for <var>rcoptions</var> include "minor", "bot", "anon",
-     *  "redirect" and "patrolled" for vanilla MediaWiki (extensions may define
-     *  their own). {@code rcoptions = { minor = true, anon = false, patrolled
-     *  = false }} returns all minor edits from logged in users that aren't
-     *  patrolled.
-     *
-     *  @param rcoptions a Map dictating which pages to select. Key not present
-     *  = don't care.
-     *  @param amount the amount of new pages to get (overrides global query
-     *  limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any optional parameters
      *  @return the revisions that created the pages satisfying the requirements
      *  above
      *  @throws IOException if a network error occurs
      *  @since 0.35
      */
-    public Revision[] newPages(int amount, Map<String, Boolean> rcoptions, int... ns) throws IOException
+    public List<Revision> newPages(Wiki.RequestHelper helper) throws IOException
     {
-        return recentChanges(amount, rcoptions, true, ns);
+        return recentChanges(helper, true);
     }
 
     /**
-     *  Fetches the <var>amount</var> most recent changes in the main namespace.
-     *  WARNING: The <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">
-     *  recentchanges table</a> stores edits for a <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">finite period of
-     *  time</a>; it is not possible to retrieve pages created before then.
+     *  Fetches recent edits to this wiki. See {@link
+     *  #recentChanges(Wiki.RequestHelper, boolean)} for full documentation.
      *  Equivalent to [[Special:Recentchanges]].
-     *  <p>
-     *  Note: Log entries in recent changes have a revid of 0!
      *
-     *  @param amount the number of entries to return (overrides global query
-     *  limits)
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any optional parameters
      *  @return the recent changes that satisfy these criteria
      *  @throws IOException if a network error occurs
      *  @since 0.23
      */
-    public Revision[] recentChanges(int amount) throws IOException
+    public List<Revision> recentChanges(Wiki.RequestHelper helper) throws IOException
     {
-        return recentChanges(amount, null, false, MAIN_NAMESPACE);
+        return recentChanges(helper, false);
     }
 
     /**
-     *  Fetches the <tt>amount</tt> most recent changes in the specified
-     *  namespace. WARNING: The <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">
-     *  recentchanges table</a> stores edits for a <a
-     *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">finite period of
-     *  time</a>; it is not possible to retrieve pages created before then.
-     *  Equivalent to [[Special:Recentchanges]].
-     *  <p>
-     *  Note: Log entries in recent changes have a revid of 0!
-     *
-     *  @param amount the number of entries to return (overrides global query
-     *  limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return the recent changes that satisfy these criteria
-     *  @throws IOException if a network error occurs
-     *  @since 0.23
-     */
-    public Revision[] recentChanges(int amount, int[] ns) throws IOException
-    {
-        return recentChanges(amount, null, false, ns);
-    }
-
-    /**
-     *  Fetches the <var>amount</var> most recent changes in the specified
-     *  namespace subject to the specified constraints. WARNING: The recent
-     *  changes table only stores new pages for about a month. It is not
-     *  possible to retrieve changes before then. Equivalent to
-     *  [[Special:Recentchanges]].
-     *  <p>
-     *  Note: Log entries in recent changes have a revid of 0!
-     *
-     *  @param amount the number of entries to return (overrides global query
-     *  limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @param rcoptions a bitmask of HIDE_ANON etc that dictate which pages
-     *  we return.
-     *  @return the recent changes that satisfy these criteria
-     *  @throws IOException if a network error occurs
-     *  @since 0.23
-     *  @deprecated use rcoptions as a Map instead
-     */
-    @Deprecated
-    public Revision[] recentChanges(int amount, int rcoptions, int... ns) throws IOException
-    {
-        Map<String, Boolean> newoptions = new HashMap<>();
-        if (rcoptions > 0)
-        {
-            if ((rcoptions & HIDE_ANON) == HIDE_ANON)
-                newoptions.put("anon", false);
-            if ((rcoptions & HIDE_SELF) == HIDE_SELF)
-                newoptions.put("self", false);
-            if ((rcoptions & HIDE_MINOR) == HIDE_MINOR)
-                newoptions.put("minor", false);
-            if ((rcoptions & HIDE_PATROLLED) == HIDE_PATROLLED)
-                newoptions.put("patrolled", false);
-            if ((rcoptions & HIDE_BOT) == HIDE_BOT)
-                newoptions.put("bot", false);
-        }
-        return recentChanges(amount, newoptions, false, ns);
-    }
-
-    /**
-     *  Fetches the <var>amount</var> most recent changes in the specified
-     *  namespace subject to the specified constraints. WARNING: The
-     *  <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
+     *  Fetches recent changes to this wiki. WARNING: The <a
+     *  href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
      *  table</a> stores edits for a <a href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">
      *  finite period of time</a>; it is not possible to retrieve pages created
      *  before then. Equivalent to [[Special:Recentchanges]].
+     *
+     *  <p>
+     *  Accepted parameters from <var>helper</var> are:
+     *  <ul>
+     *  <li>{@link Wiki.RequestHelper#withinDateRange(OffsetDateTime,
+     *      OffsetDateTime) date range}
+     *  <li>{@link Wiki.RequestHelper#byUser(String) user}
+     *  <li>{@link Wiki.RequestHelper#notByUser(String) not by user}
+     *  <li>{@link Wiki.RequestHelper#reverse(boolean) reverse}
+     *  <li>{@link Wiki.RequestHelper#inNamespaces(int...) namespaces}
+     *  <li>{@link Wiki.RequestHelper#taggedWith(String) tag}
+     *  <li>{@link Wiki.RequestHelper#filterBy(Map) filter by}: "minor", "bot", 
+     *  "anon", "redirect", "patrolled"
+     *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
+     *  </ul>
+     *
      *  <p>
      *  Note: Log entries in recent changes have a revid of 0!
      *
-     *  @param amount the number of entries to return (overrides global query
-     *  limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @param rcoptions a Map dictating which revisions to return. Key not
-     *  present = don't care.
-     *  @return the recent changes that satisfy these criteria
-     *  @throws IOException if a network error occurs
-     *  @since 0.23
-     */
-    public Revision[] recentChanges(int amount, Map<String, Boolean> rcoptions, int... ns) throws IOException
-    {
-        return recentChanges(amount, rcoptions, false, ns);
-    }
-
-    /**
-     *  Fetches the <var>amount</var> most recent changes in the specified
-     *  namespace subject to the specified constraints. WARNING: The
-     *  <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
-     *  table</a> stores edits for a <a href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">
-     *  finite period of time</a>; it is not possible to retrieve pages created
-     *  before then. Equivalent to [[Special:Recentchanges]].
-     *  <p>
-     *  Available keys for <var>rcoptions</var> include "minor", "bot", "anon",
-     *  "redirect", "patrolled" for vanilla MediaWiki (extensions may define
-     *  their own). {@code rcoptions = { minor = true, anon = false, patrolled
-     *  = false}} returns all minor edits from logged in users that aren't
-     *  patrolled.
-     *  <p>
-     *  Note: Log entries in recent changes have a revid of 0!
-     *
-     *  @param amount the number of entries to return (overrides global
-     *  query limits)
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @param rcoptions a Map dictating which revisions to return. Key not
-     *  present = don't care.
+     *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
+     *  provide any of the optional parameters described above
      *  @param newpages show new pages only
      *  @return the recent changes that satisfy these criteria
      *  @throws IOException if a network error occurs
      *  @since 0.35
      */
-    protected Revision[] recentChanges(int amount, Map<String, Boolean> rcoptions, boolean newpages, int... ns) throws IOException
+    protected List<Revision> recentChanges(Wiki.RequestHelper helper, boolean newpages) throws IOException
     {
+        int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "recentchanges");
         getparams.put("rcprop", "title|ids|user|timestamp|flags|comment|parsedcomment|sizes|sha1");
-        if (ns.length > 0)
-            getparams.put("rcnamespace", constructNamespaceString(ns));
+        if (helper != null)
+        {
+            helper.setRequestType("rc");
+            getparams.putAll(helper.addNamespaceParameter());
+            getparams.putAll(helper.addUserParameter());
+            getparams.putAll(helper.addExcludeUserParameter());
+            getparams.putAll(helper.addDateRangeParameters());
+            getparams.putAll(helper.addTagParameter());
+            getparams.putAll(helper.addReverseParameter());
+            getparams.putAll(helper.addShowParameter());
+            limit = helper.limit();
+        }
         if (newpages)
             getparams.put("rctype", "new");
-        // rc options
-        if (rcoptions != null && !rcoptions.isEmpty())
-        {
-            StringBuilder temp = new StringBuilder();
-            rcoptions.forEach((key, value) ->
-            {
-                if (Boolean.FALSE.equals(value))
-                    temp.append('!');
-                temp.append(key);
-                temp.append("|");
-            });
-            getparams.put("rcshow", temp.substring(0, temp.length() - 1));
-        }
 
-        int originallimit = getQueryLimit();
-        setQueryLimit(amount);
-        List<Revision> revisions = makeListQuery("rc", query, getparams, null, newpages ? "newPages" : "recentChanges",
+        List<Revision> revisions = makeListQuery("rc", getparams, null, newpages ? "newPages" : "recentChanges", limit,
             (line, results) ->
         {
             // xml form <rc type="edit" ns="0" title="Main Page" ... />
@@ -6679,11 +6356,9 @@ public class Wiki implements Comparable<Wiki>
                 results.add(parseRevision(line.substring(i, j), ""));
             }
         });
-        setQueryLimit(originallimit);
 
-        int temp = revisions.size();
-        log(Level.INFO, "recentChanges", "Successfully retrieved recent changes (" + temp + " revisions)");
-        return revisions.toArray(new Revision[temp]);
+        log(Level.INFO, "recentChanges", "Successfully retrieved recent changes (" + revisions.size() + " revisions)");
+        return revisions;
     }
 
     /**
@@ -6761,7 +6436,7 @@ public class Wiki implements Comparable<Wiki>
             getparams.put("iwbltitle", normalize(title));
         getparams.put("iwblprop", "iwtitle|iwprefix");
 
-        List<String[]> links = makeListQuery("iwbl", query, getparams, null, "getInterWikiBacklinks", (line, results) ->
+        List<String[]> links = makeListQuery("iwbl", getparams, null, "getInterWikiBacklinks", -1, (line, results) ->
         {
             // xml form: <iw pageid="24163544" ns="0" title="Elisabeth_of_Wroclaw" iwprefix="pl" iwtitle="Main_Page" />
             for (int x = line.indexOf("<iw "); x > 0; x = line.indexOf("<iw ", ++x))
@@ -6950,7 +6625,7 @@ public class Wiki implements Comparable<Wiki>
         /**
          *  Determines whether this user is blocked at the time of construction.
          *  If you want a live check, look  up the user on the {@linkplain
-         *  #getBlockList(String) list of blocks}.
+         *  #getBlockList(String, RequestHelper) list of blocks}.
          *  @return whether this user is blocked
          *  @since 0.12
          */
@@ -6979,9 +6654,10 @@ public class Wiki implements Comparable<Wiki>
          *  @throws IOException if something goes wrong
          *  @since 0.08
          */
-        public LogEntry[] blockLog() throws IOException
+        public List<LogEntry> blockLog() throws IOException
         {
-            return Wiki.this.getLogEntries(Wiki.BLOCK_LOG, null, null, "User:" + username);
+            Wiki.RequestHelper rh = new RequestHelper().byTitle("User:" + username);
+            return Wiki.this.getLogEntries(Wiki.BLOCK_LOG, null, rh);
         }
 
         /**
@@ -6991,27 +6667,10 @@ public class Wiki implements Comparable<Wiki>
          *  @throws IOException if a network error occurs
          *  @since 0.17
          */
-        public Revision[] contribs(int... ns) throws IOException
+        public List<Revision> contribs(int... ns) throws IOException
         {
-            return Wiki.this.contribs(username, ns);
-        }
-
-        /**
-         *  Returns a list of pages created by this user in the given namespaces.
-         *  @param ns a list of namespaces to filter by, empty = all namespaces
-         *  @return the list of pages created by this user
-         *  @throws IOException if a network error occurs
-         *  @since 0.35
-         */
-        public String[] createdPages(int... ns) throws IOException
-        {
-            Map<String, Boolean> options = new HashMap<>();
-            options.put("new", Boolean.TRUE);
-            List<Wiki.Revision>[] contribs = Wiki.this.contribs(new String[] { username }, "", null, null, options, ns);
-            String[] ret = new String[contribs[0].size()];
-            for (int i = 0; i < contribs[0].size(); i++)
-                ret[i] = contribs[0].get(i).getTitle();
-            return ret;
+            Wiki.RequestHelper rh = new RequestHelper().inNamespaces(ns);
+            return Wiki.this.contribs(username, rh);
         }
 
         /**
@@ -7023,9 +6682,10 @@ public class Wiki implements Comparable<Wiki>
          *  @throws IOException if a network error occurs
          *  @since 0.33
          */
-        public LogEntry[] getLogEntries(String logtype, String action) throws IOException
+        public List<LogEntry> getLogEntries(String logtype, String action) throws IOException
         {
-            return Wiki.this.getLogEntries(logtype, action, username, null);
+            Wiki.RequestHelper rh = new RequestHelper().byUser(username);
+            return Wiki.this.getLogEntries(logtype, action, rh);
         }
 
         /**
@@ -7127,7 +6787,7 @@ public class Wiki implements Comparable<Wiki>
          *  confused with "rcid" (which is the ID in the recentchanges table).
          *  For a {@link Wiki.LogEntry}, this value only makes sense if the
          *  record was obtained through {@link Wiki#getLogEntries(String, String,
-         *  int)} and overloads (other methods return pseudo-LogEntries).
+         *  RequestHelper)} and overloads (other methods return pseudo-LogEntries).
          *  @return the ID of this revision
          */
         public long getID()
@@ -7178,13 +6838,13 @@ public class Wiki implements Comparable<Wiki>
         {
             return userDeleted;
         }
-        
+
         /**
          *  Returns the page affected by this event. May be {@code null} for
          *  certain types of LogEntry and/or if the LogEntry is RevisionDeleted
          *  and you don't have the ability to access it.
          *  @return (see above)
-         *  @see #isContentDeleted() 
+         *  @see #isContentDeleted()
          */
         public String getTitle()
         {
@@ -7208,15 +6868,15 @@ public class Wiki implements Comparable<Wiki>
         /**
          *  Gets the comment for this event, with limited parsing into HTML.
          *  Hyperlinks in the returned HTML are rewritten from useless relative
-         *  URLs to full URLs that point to the wiki page in question. Returns 
-         *  {@code null} if {@linkplain #isCommentDeleted() the comment was 
-         *  RevisionDeleted} and you lack the necessary privileges. 
-         * 
+         *  URLs to full URLs that point to the wiki page in question. Returns
+         *  {@code null} if {@linkplain #isCommentDeleted() the comment was
+         *  RevisionDeleted} and you lack the necessary privileges.
+         *
          *  <p><b>Warnings:</b>
          *  <ul>
-         *  <li>Not available through {@link #getBlockList(String, OffsetDateTime, OffsetDateTime)}.
+         *  <li>Not available through {@link #getBlockList(String, RequestHelper)}.
          *  </ul>
-         *  
+         *
          *  @return the comment associated with the event, parsed into HTML
          *  @see #getComment()
          */
@@ -7626,10 +7286,11 @@ public class Wiki implements Comparable<Wiki>
             if (pageDeleted) // FIXME: broken if a page is live, but has deleted revisions
             {
                 Map<String, String> getparams = new HashMap<>();
+                getparams.put("action", "query");
                 getparams.put("prop", "deletedrevisions");
                 getparams.put("drvprop", "content");
                 getparams.put("revids", String.valueOf(getID()));
-                String temp = makeHTTPRequest(query, getparams, null, "Revision.getText");
+                String temp = makeApiCall(getparams, null, "Revision.getText");
                 int a = temp.indexOf("<rev ");
                 a = temp.indexOf('>', a) + 1;
                 int b = temp.indexOf("</rev>", a); // tag not present if revision has no content
@@ -7660,14 +7321,14 @@ public class Wiki implements Comparable<Wiki>
         /**
          *  Returns the SHA-1 hash (base 16, lower case) of the content of this
          *  revision, or {@code null} if the revision content is RevisionDeleted
-         *  and we cannot access it. 
-         * 
+         *  and we cannot access it.
+         *
          *  <p><b>Warnings:</b>
          *  <ul>
-         *  <li>Not available through {@link #watchlist(Map, int...)} or {@link
-         *      #contribs(String[], String, OffsetDateTime, OffsetDateTime, Map, int...)}.
+         *  <li>Not available through {@link #watchlist(RequestHelper)} or {@link
+         *      #contribs(List, String, RequestHelper)}.
          *  </ul>
-         * 
+         *
          *  @return (see above)
          *  @since 0.35
          */
@@ -7683,7 +7344,7 @@ public class Wiki implements Comparable<Wiki>
          *  @param other another revision on the same page.
          *  @return the difference between this and the other revision
          *  @throws IOException if a network error occurs
-         *  @throws SecurityException if this or the other revision is 
+         *  @throws SecurityException if this or the other revision is
          *  RevisionDeleted and the user lacks the necessary privileges
          *  @since 0.21
          */
@@ -7693,7 +7354,7 @@ public class Wiki implements Comparable<Wiki>
             from.put("revision", this);
             Map<String, Object> to = new HashMap<>();
             to.put("revision", other);
-            return Wiki.this.diff(from, -1, to, -1);
+            return Wiki.this.diff(from, to);
         }
 
         /**
@@ -7705,7 +7366,7 @@ public class Wiki implements Comparable<Wiki>
          *  @param text some wikitext
          *  @return the difference between this and the the text provided
          *  @throws IOException if a network error occurs
-         *  @throws SecurityException if this or the other revision is 
+         *  @throws SecurityException if this or the other revision is
          *  RevisionDeleted and the user lacks the necessary privileges
          *  @since 0.21
          */
@@ -7715,12 +7376,12 @@ public class Wiki implements Comparable<Wiki>
             from.put("revision", this);
             Map<String, Object> to = new HashMap<>();
             to.put("text", text);
-            return Wiki.this.diff(from, -1, to, -1);
+            return Wiki.this.diff(from, to);
         }
 
         /**
          *  Returns a HTML rendered diff table from this revision to the given
-         *  <var>oldid</var>. See {@link #diff(Map, int, Map, int)} for full 
+         *  <var>oldid</var>. See {@link #diff(Map, int, Map, int)} for full
          *  documentation.
          *
          *  @param oldid the oldid of a revision on the same page. {@link
@@ -7728,7 +7389,7 @@ public class Wiki implements Comparable<Wiki>
          *  Wiki#CURRENT_REVISION} can be used here for obvious effect.
          *  @return the difference between this and the other revision
          *  @throws IOException if a network error occurs
-         *  @throws SecurityException if this or the other revision is 
+         *  @throws SecurityException if this or the other revision is
          *  RevisionDeleted and the user lacks the necessary privileges
          *  @since 0.26
          */
@@ -7738,12 +7399,12 @@ public class Wiki implements Comparable<Wiki>
             from.put("revision", this);
             Map<String, Object> to = new HashMap<>();
             to.put("revid", oldid);
-            return Wiki.this.diff(from, -1, to, -1);
+            return Wiki.this.diff(from, to);
         }
 
         /**
          *  Determines whether this Revision is equal to another based on the
-         *  underlying {@linkplain Event#equals(Object) Event} and SHA-1.
+         *  underlying {@linkplain Event#equals(Object) Event}.
          *  @param o an object
          *  @return whether o is equal to this object
          *  @since 0.17
@@ -7751,25 +7412,28 @@ public class Wiki implements Comparable<Wiki>
         @Override
         public boolean equals(Object o)
         {
+            // Note to self: don't use SHA-1 until all API calls provide it.
             if (!super.equals(o))
                 return false;
             if (!(o instanceof Revision))
                 return false;
-            Revision rev = (Revision)o;
-            return Objects.equals(sha1, rev.sha1);
+            // Revision rev = (Revision)o;
+            // return Objects.equals(sha1, rev.sha1);
+            return true;
         }
 
         /**
          *  Returns a hash code of this revision based on the underlying
-         *  {@linkplain Event#hashCode() Event} and SHA-1.
+         *  {@linkplain Event#hashCode() Event}.
          *  @return a hash code
          *  @since 0.17
          */
         @Override
         public int hashCode()
         {
+            // Note to self: don't use SHA-1 until all API calls provide it.
             int hc = super.hashCode();
-            hc = 127 * hc + (sha1 == null ? 0 : sha1.hashCode());
+            hc = 127 * hc;
             return hc;
         }
 
@@ -7796,15 +7460,15 @@ public class Wiki implements Comparable<Wiki>
         }
 
         /**
-         *  Determines whether this revision created a new page. 
-         * 
+         *  Determines whether this revision created a new page.
+         *
          *  <p><b>Warnings:</b>
          *  <ul>
          *  <li>Returning {@code true} does not imply this is the bottommost
          *  revision on the page due to histmerges.
-         *  <li>Not available through {@link #getPageHistory(String, OffsetDateTime, OffsetDateTime, boolean)}
+         *  <li>Not available through {@link #getPageHistory(String, Wiki.RequestHelper)}
          *  </ul>
-         * 
+         *
          *  @return (see above)
          *  @since 0.27
          */
@@ -7886,7 +7550,8 @@ public class Wiki implements Comparable<Wiki>
         }
 
         /**
-         *  Returns the change in page size caused by this revision.
+         *  Returns the change in page size caused by this revision. Not available
+         *  through getPageHistory or getDeletedHistory.
          *  @return see above
          *  @since 0.28
          */
@@ -7974,9 +7639,9 @@ public class Wiki implements Comparable<Wiki>
          *  @return (see above)
          *  @since 0.35
          */
-        public String permanentURL()
+        public String permanentUrl()
         {
-            return getIndexPHPURL() + "?oldid=" + getID();
+            return getIndexPhpUrl() + "?oldid=" + getID();
         }
 
         /**
@@ -8012,6 +7677,318 @@ public class Wiki implements Comparable<Wiki>
         }
     }
 
+    /**
+     *  Vehicle for stuffing standard optional parameters into Wiki queries.
+     *  {@code RequestHelper} objects are reusable. The following example
+     *  fetches articles from the back of the new pages queue on the
+     *  English Wikipedia.
+     *
+     *  {@code <pre>
+     *  Wiki.RequestHelper rh = enWiki.new RequestHelper()
+     *      .inNamespaces(Wiki.MAIN_NAMESPACE)
+     *      .reverse();
+     *  List<Wiki.Revision> newpages = enWiki.newPages(rh);
+     *  </pre>}
+     *
+     *  @since 0.36
+     */
+    public class RequestHelper
+    {
+        private String title;
+        private String byuser;
+        private OffsetDateTime earliest, latest;
+        private int[] localns = new int[0];
+        private boolean reverse = false;
+        private String notbyuser;
+        private String tag;
+        private Map<String, Boolean> options;
+        private String requestType;
+        private int limit = -1;
+
+        /**
+         *  Creates a new RequestHelper.
+         */
+        public RequestHelper()
+        {
+        }
+
+        /**
+         *  Limits query results to Events occuring on the given title. If a
+         *  query mandates a title parameter (e.g. {@link #getPageHistory(String,
+         *  RequestHelper)}, don't use this. Use the parameter in the query
+         *  method instead.
+         *  @param title a page title
+         *  @return this RequestHelper
+         */
+        public RequestHelper byTitle(String title)
+        {
+            this.title = (title == null) ? null : normalize(title);
+            return this;
+        }
+
+        /**
+         *  Limits query results to Events triggered by the given user. If a query
+         *  mandates a user parameter (e.g. {@link #contribs(List, String, RequestHelper)},
+         *  don't use this. Use the parameter in the query method instead.
+         *  @param byuser some username or IP address
+         *  @return this RequestHelper
+         */
+        public RequestHelper byUser(String byuser)
+        {
+            this.byuser = (byuser == null) ? null : normalize(byuser);
+            return this;
+        }
+
+        /**
+         *  Limit results to be within this date range.
+         *  @param earliest the lower (earliest) date bound, use {@code null} to
+         *  not set one
+         *  @param latest the higher (latest) date bound, use {@code null} to
+         *  not set one
+         *  @throws IllegalArgumentException if {@code earliest.isAfter(latest)}
+         *  @return this RequestHelper
+         */
+        public RequestHelper withinDateRange(OffsetDateTime earliest, OffsetDateTime latest)
+        {
+            if (earliest != null && latest != null && earliest.isAfter(latest))
+                throw new IllegalArgumentException("Earliest date must be before latest date!");
+            this.earliest = earliest;
+            this.latest = latest;
+            return this;
+        }
+
+        /**
+         *  Limits query results to the given namespaces.
+         *  @param ns a list of namespaces
+         *  @return this RequestHelper
+         */
+        public RequestHelper inNamespaces(int... ns)
+        {
+            localns = ns;
+            return this;
+        }
+
+        /**
+         *  Should we perform this query in reverse order (earliest first).
+         *  @param reverse whether to reverse this query
+         *  @return this RequestHelper
+         */
+        public RequestHelper reverse(boolean reverse)
+        {
+            this.reverse = reverse;
+            return this;
+        }
+
+        /**
+         *  Limits query results to {@link Event Events} that have been tagged
+         *  with the given tag.
+         *  @param tag a change tag
+         *  @return this RequestHelper
+         */
+        public RequestHelper taggedWith(String tag)
+        {
+            this.tag = tag;
+            return this;
+        }
+
+        /**
+         *  Limits query results to Events NOT triggered by the given user.
+         *  @param notbyuser some username or IP address to exclude
+         *  @return this RequestHelper
+         */
+        public RequestHelper notByUser(String notbyuser)
+        {
+            this.notbyuser = (notbyuser == null) ? null : normalize(notbyuser);
+            return this;
+        }
+
+        /**
+         *  Return no more than the given number of results. Overrides {@linkplain
+         *  #setQueryLimit(int) global limits}. Supply a negative integer to use
+         *  global limits.
+         *  @param limit a positive integer
+         *  @return this RequestHelper
+         */
+        public RequestHelper limitedTo(int limit)
+        {
+            this.limit = limit;
+            return this;
+        }
+
+        /**
+         *  Filters a set of returned results using the given options. Please 
+         *  check calling method documentation for supported options.
+         * 
+         *  <p>
+         *  When filtering revisions, available keys may include "minor", "top", 
+         *  "new", "bot", "anon", "redirect", "patrolled" and "unread" for 
+         *  vanilla MediaWiki. Extensions may define their own. For instance, 
+         *  {@code rcoptions = { minor = true, anon = false,  patrolled = false}}
+         *  returns all minor edits from logged in users that aren't patrolled. 
+         *  Setting "patrolled" limits results to no older than <a
+         *  href="https://mediawiki.org/wiki/Manual:$wgRCMaxAge">retention</a> in
+         *  the <a href="https://mediawiki.org/wiki/Manual:Recentchanges_table">recentchanges
+         *  table</a>.
+         *
+         *  @param options the options to filter by
+         *  @return this RequestHelper
+         */
+        public RequestHelper filterBy(Map<String, Boolean> options)
+        {
+            this.options = options;
+            return this;
+        }
+
+        /**
+         *  Sets the prefix of API request parameters (the XX in XXlimit, XXdir,
+         *  XXnamespace and so forth). Internal use only.
+         *  @param prefix the prefix to use (must not be null)
+         */
+        protected void setRequestType(String prefix)
+        {
+            requestType = Objects.requireNonNull(prefix);
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the title to get
+         *  events for, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addTitleParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (title != null)
+                temp.put(requestType + "title", title);
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the user to filter
+         *  returned events by, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addUserParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (byuser != null)
+                temp.put(requestType + "user", byuser);
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the dates to start
+         *  and end enumeration, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addDateRangeParameters()
+        {
+            Map<String, String> temp = new HashMap<>();
+            OffsetDateTime odt = reverse ? earliest : latest;
+            if (odt != null)
+                temp.put(requestType + "start", odt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+            odt = reverse ? latest : earliest;
+            if (odt != null)
+                temp.put(requestType + "end", odt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the namespaces to limit
+         *  this query to, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addNamespaceParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (localns.length != 0)
+                temp.put(requestType + "namespace", constructNamespaceString(localns));
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter instructing the API to reverse the
+         *  query, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addReverseParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            temp.put(requestType + "dir", reverse ? "newer" : "older");
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the tag to limit
+         *  returned events to, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addTagParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (tag != null)
+                temp.put(requestType + "tag", tag);
+            return temp;
+        }
+
+        /**
+         *  Returns a HTTP request parameter containing the user to exclude
+         *  when returning events, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addExcludeUserParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (notbyuser != null)
+                temp.put(requestType + "excludeuser", notbyuser);
+            return temp;
+        }
+
+        /**
+         *  Returns HTTP request parameter(s) containing flags to filter returned
+         *  revisions by, or an empty map if not wanted.
+         *  @return (see above)
+         */
+        protected Map<String, String> addShowParameter()
+        {
+            Map<String, String> temp = new HashMap<>();
+            if (options != null && !options.isEmpty())
+            {
+                // deal with MW API annoyance for action=query&list=watchlist - see watchlist(rh)
+                Boolean top = null;
+                if (requestType.equals("wl"))
+                {
+                    top = options.remove("top");
+                    if (Boolean.TRUE.equals(top))
+                        temp.put("wlallrev", "1");
+                }
+
+                StringBuilder sb = new StringBuilder();
+                options.forEach((key, value) ->
+                {
+                    if (Boolean.FALSE.equals(value))
+                        sb.append('!');
+                    sb.append(key);
+                    sb.append("|");
+                });
+                temp.put(requestType + "show", sb.substring(0, sb.length() - 1));
+
+                if (top != null) // put it back
+                    options.put("top", top);
+            }
+            return temp;
+        }
+
+        /**
+         *  Returns the number of results the query should be limited to. If not
+         *  present, use {@linkplain #setQueryLimit(int) global limits}.
+         *  @return (see above)
+         */
+        public int limit()
+        {
+            return limit;
+        }
+    }
+
     // INTERNALS
 
     /**
@@ -8020,11 +7997,11 @@ public class Wiki implements Comparable<Wiki>
      *  @param <T> a class describing the parsed API results (e.g. String,
      *  LogEntry, Revision)
      *  @param queryPrefix the request type prefix (e.g. "pl" for prop=links)
-     *  @param urlbase the base of the query url
      *  @param getparams a bunch of parameters to send via HTTP GET
      *  @param postparams if not null, send these parameters via POST (see
-     *  {@link #makeHTTPRequest(String, Map, Map, String) }).
+     *  {@link #makeApiCall(Map, Map, String) }).
      *  @param caller the name of the calling method
+     *  @param limit fetch no more than this many results
      *  @param parser a BiConsumer that parses the XML returned by the MediaWiki
      *  API into things we want, dumping them into the given List
      *  @return the query results
@@ -8033,17 +8010,21 @@ public class Wiki implements Comparable<Wiki>
      *  privileged action (mostly avoidable)
      *  @since 0.34
      */
-    protected <T> List<T> makeListQuery(String queryPrefix, String urlbase, Map<String, String> getparams,
-        Map<String, Object> postparams, String caller, BiConsumer<String, List<T>> parser) throws IOException
+    protected <T> List<T> makeListQuery(String queryPrefix, Map<String, String> getparams,
+        Map<String, Object> postparams, String caller, int limit, BiConsumer<String, List<T>> parser) throws IOException
     {
+        if (limit < 0)
+            limit = querylimit;
+        getparams.put("action", "query");
         List<T> results = new ArrayList<>(1333);
-        StringBuilder xxcontinue = new StringBuilder();
+        String xxcontinue = queryPrefix + "continue";
         String limitstring = queryPrefix + "limit";
         do
         {
-            getparams.put(limitstring, String.valueOf(Math.min(querylimit - results.size(), max)));
-            String line = makeHTTPRequest(urlbase + xxcontinue.toString(), getparams, postparams, caller);
-            xxcontinue.setLength(0);
+            getparams.put(limitstring, String.valueOf(Math.min(limit - results.size(), max)));
+            String line = makeApiCall(getparams, postparams, caller);
+            getparams.remove(xxcontinue);
+            getparams.remove("continue");
 
             // Continuation parameter has form:
             // <continue rccontinue="20170924064528|986351741" continue="-||" />
@@ -8051,25 +8032,22 @@ public class Wiki implements Comparable<Wiki>
             {
                 int a = line.indexOf("<continue ") + 10;
                 int b = line.indexOf("/>", a);
-                String[] temp = line.substring(a, b).split("\"");
-                xxcontinue.append("&");
-                xxcontinue.append(temp[0]);
-                xxcontinue.append(URLEncoder.encode(temp[1], "UTF-8"));
-                xxcontinue.append(temp[2].replace(" ", "&"));
-                xxcontinue.append(URLEncoder.encode(temp[3], "UTF-8"));
+                String cont = line.substring(a, b);
+                getparams.put(xxcontinue, parseAttribute(cont, xxcontinue, 0));
+                getparams.put("continue", parseAttribute(cont, " continue", 0));
             }
 
             parser.accept(line, results);
         }
-        while (xxcontinue.length() != 0 && results.size() < querylimit);
+        while (getparams.containsKey(xxcontinue) && results.size() < limit);
         return results;
     }
 
     // miscellany
 
     /**
-     *  Constructs, sends and receives HTTP requests. May be useful for
-     *  subclasses.
+     *  Constructs, sends and handles calls to the MediaWiki API. This is a
+     *  low-level method for making your own, custom API calls.
      *
      *  <p>
      *  If <var>postparams</var> is not {@code null} or empty, the request is
@@ -8097,7 +8075,6 @@ public class Wiki implements Comparable<Wiki>
      *  <var>maxlag</var>, see <a href="https://mediawiki.org/wiki/Manual:Maxlag_parameter">
      *  here</a> for how this works.
      *
-     *  @param urlbase the base url to use
      *  @param getparams append these parameters to the urlbase
      *  @param postparams if null, send the request using POST otherwise use GET
      *  @param caller the caller of this method
@@ -8109,10 +8086,11 @@ public class Wiki implements Comparable<Wiki>
      *  @see <a href="http://www.w3.org/TR/html4/interact/forms.html#h-17.13.4.2">Multipart/form-data</a>
      *  @since 0.18
      */
-    protected String makeHTTPRequest(String urlbase, Map<String, String> getparams, Map<String, Object> postparams, String caller) throws IOException
+    public String makeApiCall(Map<String, String> getparams, Map<String, Object> postparams, String caller) throws IOException
     {
         // build the URL
-        StringBuilder urlbuilder = new StringBuilder(urlbase);
+        StringBuilder urlbuilder = new StringBuilder(apiUrl + "?");
+        getparams.putAll(defaultApiParams);
         for (Map.Entry<String, String> entry : getparams.entrySet())
         {
             urlbuilder.append('&');

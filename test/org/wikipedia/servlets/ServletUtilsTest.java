@@ -1,6 +1,6 @@
 /**
- *  @(#)ArrayUtilsUnitTest.java 0.01 31/10/2017
- *  Copyright (C) 2017 - 2018 MER-C and contributors
+ *  @(#)ServletUtilsTest.java 0.01 26/08/2018
+ *  Copyright (C) 2018-20XX MER-C and contributors
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -17,33 +17,34 @@
  *  along with this program; if not, write to the Free Software Foundation,
  *  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
+package org.wikipedia.servlets;
 
-package org.wikipedia;
-
-import org.junit.*;
+import org.junit.Test;
 import static org.junit.Assert.*;
 
 /**
- *  Unit tests for {@link ArrayUtils}.
+ *  Unit tests for {@link org.wikipedia.servlets.ServletUtils}.
  *  @author MER-C
  */
-public class ArrayUtilsTest
-{  
+public class ServletUtilsTest
+{
     @Test
-    public void intersection()
+    public void sanitizeForAttribute()
     {
-        String[] a = { "1", "2", "3", "4", "5" };
-        String[] b1 = { "1", "2", "3" };
-        String[] b2 = { "3", "4", "5", "x" };
-        assertArrayEquals("intersection", new String[] { "3" }, ArrayUtils.intersection(a, b1, b2));
+        assertEquals("", ServletUtils.sanitizeForAttribute(null));
+        assertEquals("default", ServletUtils.sanitizeForAttributeOrDefault(null, "default"));
+        try
+        {
+            ServletUtils.sanitizeForAttributeOrDefault(null, null);
+        }
+        catch (NullPointerException expected)
+        {
+        }
     }
     
     @Test
-    public void relativeComplement()
+    public void sanitizeForHTML()
     {
-        String[] a = { "1", "2", "3", "4", "5" };
-        String[] b1 = { "1", "2" };
-        String[] b2 = { "3", "4", "x" };
-        assertArrayEquals("intersection", new String[] { "5" }, ArrayUtils.relativeComplement(a, b1, b2));
-    }   
+        assertEquals("", ServletUtils.sanitizeForHTML(null));
+    }
 }

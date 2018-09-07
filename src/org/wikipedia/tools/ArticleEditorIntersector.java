@@ -101,11 +101,11 @@ public class ArticleEditorIntersector
         
         OffsetDateTime editsafter = (earliestdatestring == null) ? null : OffsetDateTime.parse(earliestdatestring);
         OffsetDateTime editsbefore = (latestdatestring == null) ? null : OffsetDateTime.parse(latestdatestring);
-        String[] articles = null;
+        List<String> articles = null;
         if (defaultstring != null)
-            articles = defaultstring.split("\\s");
+            articles = Arrays.asList(defaultstring.split("\\s"));
         if (filename != null)
-            articles = Files.readAllLines(Paths.get(filename)).toArray(new String[0]);
+            articles = Files.readAllLines(Paths.get(filename));
         
         ArticleEditorIntersector aei = new ArticleEditorIntersector(wiki);
         aei.setIgnoringMinorEdits(nominor);
@@ -131,12 +131,14 @@ public class ArticleEditorIntersector
         // grab user contributions
         if (user != null)
         {
-            Stream<Wiki.Revision> stuff = Arrays.stream(wiki.contribs(user, editsafter, editsbefore, null));
+            Wiki.RequestHelper rh = wiki.new RequestHelper()
+                .withinDateRange(editsafter, editsbefore);
+            Stream<Wiki.Revision> stuff = wiki.contribs(user, rh).stream();
             if (adminmode)
             {
                 try
                 {
-                    stuff = Stream.concat(stuff, Arrays.stream(wiki.deletedContribs(user, editsafter, editsbefore, false)));
+                    stuff = Stream.concat(stuff, wiki.deletedContribs(user, rh).stream());
                 }
                 catch (SecurityException ex)
                 {
@@ -148,13 +150,13 @@ public class ArticleEditorIntersector
                 stuff = stuff.filter(rev -> !rev.isMinor());
             articles = stuff.map(Wiki.Revision::getTitle)
                 .distinct()
-                .toArray(String[]::new);
+                .collect(Collectors.toList());
         }
         // grab from category
         if (category != null)
-            articles = wiki.getCategoryMembers(category);
+            articles = Arrays.asList(wiki.getCategoryMembers(category));
         
-        if (articles.length == 0)
+        if (articles.isEmpty())
         {
             System.err.println("Input has no articles!");
             System.exit(3);
@@ -245,7 +247,7 @@ public class ArticleEditorIntersector
      *  that has a SHA-1 equal to a previous revision on the same page).
      *  @return whether reverts are ignored
      *  @see #setIgnoringReverts(boolean) 
-     *  @see ArrayUtils#removeReverts(Wiki.Revision[])
+     *  @see Revisions#removeReverts(List)
      *  @since 0.02
      */
     public boolean isIgnoringReverts()
@@ -258,7 +260,7 @@ public class ArticleEditorIntersector
      *  that has a SHA-1 equal to a previous revision on the same page).
      *  @param ignorereverts whether reverts will be ignored
      *  @see #isIgnoringReverts()
-     *  @see ArrayUtils#removeReverts(Wiki.Revision[])
+     *  @see Revisions#removeReverts(List)
      *  @since 0.02
      */
     public void setIgnoringReverts(boolean ignorereverts)
@@ -333,13 +335,17 @@ public class ArticleEditorIntersector
      *  @throws IllegalArgumentException if {@code articles.length < 2} after
      *  duplicates (as in {@code String.equals}) and Special/Media pages are removed
      */
-    public Map<String, List<Wiki.Revision>> intersectArticles(String[] articles, 
+    public Map<String, List<Wiki.Revision>> intersectArticles(Iterable<String> articles, 
         boolean noadmin, boolean nobot, boolean noanon) throws IOException
     {
+        Wiki.RequestHelper rh = wiki.new RequestHelper()
+            .withinDateRange(earliestdate, latestdate);
+                
         // remove duplicates and fail quickly if less than two pages
-        Set<String> pageset = Arrays.stream(articles)
-            .filter(article -> wiki.namespace(article) >= 0) // remove Special: and Media: pages
-            .collect(Collectors.toSet());
+        Set<String> pageset = new HashSet<>();
+        for (String article : articles)
+            if (wiki.namespace(article) >= 0) // remove Special: and Media: pages
+                pageset.add(article);
         if (pageset.size() < 2)
             throw new IllegalArgumentException("At least two articles are needed to derive a meaningful intersection.");
         
@@ -350,9 +356,9 @@ public class ArticleEditorIntersector
                 Stream<Wiki.Revision> str = Stream.empty();
                 try
                 {
-                    str = Arrays.stream(wiki.getPageHistory(article, earliestdate, latestdate, false));
+                    str = wiki.getPageHistory(article, rh).stream();
                     if (adminmode)
-                        str = Stream.concat(str, Arrays.stream(wiki.getDeletedHistory(article, earliestdate, latestdate, false)));
+                        str = Stream.concat(str, wiki.getDeletedHistory(article, rh).stream());
                 }
                 catch (IOException | SecurityException ignored)
                 {
@@ -366,7 +372,7 @@ public class ArticleEditorIntersector
         if (nominor)
             revstream = revstream.filter(rev -> !rev.isMinor());
         if (noreverts)
-            revstream = Arrays.stream(ArrayUtils.removeReverts(revstream.toArray(x -> new Wiki.Revision[x])));
+            revstream = Revisions.removeReverts(revstream.collect(Collectors.toList())).stream();
         Map<String, List<Wiki.Revision>> results = revstream.collect(Collectors.groupingBy(Wiki.Revision::getUser));
         
         Iterator<Map.Entry<String, List<Wiki.Revision>>> iter = results.entrySet().iterator();
@@ -436,22 +442,26 @@ public class ArticleEditorIntersector
      *  @return a map with page &#8594; list of revisions made
      *  @throws IOException if a network error occurs
      */
-    public Map<String, List<Wiki.Revision>> intersectEditors(String[] users) throws IOException
+    public Map<String, List<Wiki.Revision>> intersectEditors(List<String> users) throws IOException
     {
-        // fetch the list of (deleted) edits
         Map<String, Boolean> options = new HashMap<>();
         if (nominor)
             options.put("minor", Boolean.FALSE);
-        List<Wiki.Revision>[] revisions = wiki.contribs(users, "", earliestdate, latestdate, options);
-        Stream<Wiki.Revision> revstream = Arrays.stream(revisions).flatMap(List::stream);
+        Wiki.RequestHelper rh = wiki.new RequestHelper()
+            .withinDateRange(earliestdate, latestdate)
+            .filterBy(options);
+                
+        // fetch the list of (deleted) edits
+        List<List<Wiki.Revision>> revisions = wiki.contribs(users, null, rh);
+        Stream<Wiki.Revision> revstream = revisions.stream().flatMap(List::stream);
         
         if (adminmode)
         {
-            Stream<Wiki.Revision> revstream2 = Arrays.stream(users).flatMap(user -> 
+            Stream<Wiki.Revision> revstream2 = users.stream().flatMap(user -> 
             {
                 try
                 {
-                    return Arrays.stream(wiki.deletedContribs(user));
+                    return wiki.deletedContribs(user, rh).stream();
                 }
                 catch (IOException | SecurityException ex)
                 {
@@ -464,7 +474,7 @@ public class ArticleEditorIntersector
             revstream = Stream.concat(revstream, revstream2);
         }
         // we cannot filter by sizediff here, the MediaWiki API does not return
-        // this information for deleted revisions
+        // this information for page histories or deleted revisions
         if (nominor)
             revstream = revstream.filter(rev -> !rev.isMinor());
         return revstream.collect(Collectors.groupingBy(Wiki.Revision::getTitle));

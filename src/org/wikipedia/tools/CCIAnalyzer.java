@@ -25,8 +25,7 @@ import java.util.*;
 import java.util.logging.*;
 import java.util.regex.Pattern;
 import javax.swing.JFileChooser;
-import org.wikipedia.ParserUtils;
-import org.wikipedia.Wiki;
+import org.wikipedia.*;
 
 /**
  *  Identifies trivial diffs in a contributor copyright investigation.
@@ -98,7 +97,7 @@ public class CCIAnalyzer
                 from.put("revid", oldid);
                 Map<String, Object> to = new HashMap<>();
                 to.put("revid", Wiki.PREVIOUS_REVISION);
-                diff = enWiki.diff(from, -1, to, -1);
+                diff = enWiki.diff(from, to);
                 exception = false;
             }
             catch (IOException ex)
@@ -122,8 +121,10 @@ public class CCIAnalyzer
                 // HACK: RevisionDeleted revision or deleted article.
                 continue;
             }
+            if (diff == null) // RevisionDeleted revision
+                continue;
             // Condense deltas to avoid problems like https://en.wikipedia.org/w/index.php?title=&diff=prev&oldid=486611734
-            diff = diff.toLowerCase();
+            diff = diff.toLowerCase(enWiki.locale());
             diff = diff.replace(deltaend + " " + deltabegin, " ");
             // If the diff is empty (see https://en.wikipedia.org/w/index.php?diff=343490272)
             // it will not contain diffaddedbegin -> default major to true.
@@ -197,8 +198,7 @@ public class CCIAnalyzer
             cleaned.append("\n");
         }
         System.out.println(cleaned);
-        System.out.println("----------------------");
-        System.out.println("Diffs removed: " + minoredits.size() + " of " + count 
+        System.err.println("Diffs removed: " + minoredits.size() + " of " + count 
             + ", articles removed: " + removedarticles);
     }
     
@@ -234,7 +234,7 @@ public class CCIAnalyzer
             int j = temp.indexOf("]]", i);
             if (j < 0) // unbalanced brackets
                 break;
-            List<String> parsedlink = ParserUtils.parseWikilink(temp.substring(i, j + 2));
+            List<String> parsedlink = WikitextUtils.parseWikilink(temp.substring(i, j + 2));
             if (parsedlink.get(0).length() > 100)
                 // something has gone wrong here
                 break;

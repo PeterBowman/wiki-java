@@ -51,6 +51,7 @@ public class ExternalLinkPopularity
         Map<String, String> parsedargs = new CommandLineParser()
             .synopsis("org.wikipedia.tools.ExternalLinkPopularity", "[options]")
             .addSingleArgumentFlag("--wiki", "example.org", "The wiki to fetch data from (default: en.wikipedia.org)")
+            .addSingleArgumentFlag("--category", "Example category", "Analyze all articles in [[Category:Example category]] (not recursive)")
             .addSingleArgumentFlag("--title", "wikipage", "The wiki page to get links from")
             .addSingleArgumentFlag("--limit", "n", "Fetch no more than n links (default: 500)")
             .parse(args);
@@ -60,16 +61,22 @@ public class ExternalLinkPopularity
         ExternalLinkPopularity elp = new ExternalLinkPopularity(wiki);
         // meta-domains (edwardbetts.com = {{orphan}}
         elp.getExcludeList().addAll(Arrays.asList("wmflabs.org", "edwardbetts.com", "archive.org"));
-        
         elp.setMaxLinks(Integer.parseInt(parsedargs.getOrDefault("--limit", "500")));
+        
+        List<String> pages = new ArrayList<>();
+        String category = parsedargs.get("--category");
+        if (category != null)
+            pages.addAll(Arrays.asList(wiki.getCategoryMembers(category, Wiki.MAIN_NAMESPACE)));
         String article = parsedargs.get("--title");
-        if (article == null)
+        if (article != null)
+            pages.add(article);
+        if (pages.isEmpty())
         {
-            System.out.println("No article specified!");
+            System.out.println("No articles specified!");
             System.exit(1);
         }
-        Map<String, Map<String, List<String>>> results = elp.fetchExternalLinks(Arrays.asList(article));
-        Map<String, Map<String, Integer>> popresults = elp.determineLinkPopularity(results);
+        Map<String, Map<String, List<String>>> results = elp.fetchExternalLinks(pages);
+        Map<String, Integer> popresults = elp.determineLinkPopularity(flatten(results));
         System.out.println(elp.exportResultsAsWikitext(results, popresults));
         
         // String[] spampages = enWiki.getCategoryMembers("Category:Wikipedia articles with undisclosed paid content from March 2018", Wiki.MAIN_NAMESPACE);
@@ -177,26 +184,35 @@ public class ExternalLinkPopularity
         }
         return domaintourls;
     }
+
+    /**
+     *  Flattens the output of {@link #fetchExternalLinks(List)} to a 
+     *  single-level List.
+     *  @param data the output to flatten
+     *  @return the set of domains added
+     */
+    public static List<String> flatten(Map<String, Map<String, List<String>>> data)
+    {
+        List<String> domains = new ArrayList<>();
+        for (Map.Entry<String, Map<String, List<String>>> pagedomaintourls : data.entrySet())
+            domains.addAll(pagedomaintourls.getValue().keySet());
+        return domains;
+    }
     
     /**
      *  Determine a list of sites' popularity as external links. Each popularity
      *  score is capped at {@link #getMaxLinks()} because some domains are used 
-     *  very frequently and we don't want to be here forever. <var>data</var>
-     *  is of the form unique String &#8594; domain &#8594; links and can be
-     *  the results from {@link #fetchExternalLinks(List)}.
+     *  very frequently and we don't want to be here forever. 
      * 
-     *  @param data a Map with unique String &#8594; domain &#8594; links
-     *  @return a Map with page &#8594; domain &#8594; popularity
+     *  @param data a list of domains to determine popularity for
+     *  @return a Map with domain &#8594; popularity
      *  @throws IOException if a network error occurs
      */
-    public Map<String, Map<String, Integer>> determineLinkPopularity(Map<String, Map<String, List<String>>> data) throws IOException
+    public Map<String, Integer> determineLinkPopularity(Collection<String> data) throws IOException
     {
         // deduplicate domains
         Set<String> domains = new LinkedHashSet<>();
-        data.forEach((page, pagedomaintourls) ->
-        {
-            domains.addAll(pagedomaintourls.keySet());
-        });
+        domains.addAll(data);
         domains.removeIf(domain -> exclude.stream().anyMatch(exc -> domain.contains(exc)));
 
         // linksearch the domains to determine popularity
@@ -215,21 +231,10 @@ public class ExternalLinkPopularity
             lsresults.put(domain, Math.min(count, maxlinks));
         }
         wiki.setQueryLimit(Integer.MAX_VALUE);
-        
-        Map<String, Map<String, Integer>> ret = new HashMap<>();
-        data.forEach((page, pagedomaintourls) ->
-        {
-            Map<String, Integer> temp = new HashMap<>();
-            pagedomaintourls.keySet().forEach(domain ->
-            {
-                temp.put(domain, lsresults.get(domain));
-            });
-            ret.put(page, temp);
-        });
-        return ret;
+        return lsresults;
     }
     
-    public String exportResultsAsWikitext(Map<String, Map<String, List<String>>> urldata, Map<String, Map<String, Integer>> popularity)
+    public String exportResultsAsWikitext(Map<String, Map<String, List<String>>> urldata, Map<String, Integer> popularity)
     {
         StringBuilder sb = new StringBuilder();
         urldata.forEach((page, pagedomaintourls) ->
@@ -243,7 +248,7 @@ public class ExternalLinkPopularity
             DoubleSummaryStatistics dss = new DoubleSummaryStatistics();
             pagedomaintourls.forEach((domain, listoflinks) ->
             {
-                Integer numlinks = popularity.get(page).get(domain);
+                Integer numlinks = popularity.get(domain);
                 sb.append("*");
                 sb.append(domain);
                 if (numlinks >= maxlinks)
@@ -279,16 +284,16 @@ public class ExternalLinkPopularity
                 sb.append(temp.length);
                 sb.append(String.format("\n*MEAN: %.1f\n", dss.getAverage()));
                 Arrays.sort(temp);
-                double[] quartiles = quartiles(temp);
+                double[] quartiles = MathsAndStats.quartiles(temp);
                 sb.append(String.format("*Q1: %.1f\n", quartiles[0]));
-                sb.append(String.format("*MEDIAN: %.1f\n", median(temp)));
+                sb.append(String.format("*MEDIAN: %.1f\n", MathsAndStats.median(temp)));
                 sb.append(String.format("*Q3: %.1f\n\n", quartiles[1]));
             }
         });
         return sb.toString();
     }
     
-    public String exportResultsAsHTML(Map<String, Map<String, List<String>>> urldata, Map<String, Map<String, Integer>> popularity)
+    public String exportResultsAsHTML(Map<String, Map<String, List<String>>> urldata, Map<String, Integer> popularity)
     {
         Pages pageUtils = Pages.of(wiki);
         StringBuilder sb = new StringBuilder();
@@ -297,7 +302,7 @@ public class ExternalLinkPopularity
             if (pagedomaintourls.isEmpty())
                 return;
             sb.append("<h2><a href=\"");
-            sb.append(wiki.getPageURL(page));
+            sb.append(wiki.getPageUrl(page));
             sb.append("\">");
             sb.append(page);
             sb.append("</a></h2>\n");
@@ -307,7 +312,7 @@ public class ExternalLinkPopularity
             DoubleSummaryStatistics dss = new DoubleSummaryStatistics();
             pagedomaintourls.forEach((domain, listoflinks) ->
             {
-                Integer numlinks = popularity.get(page).get(domain);
+                Integer numlinks = popularity.get(domain);
                 sb.append("<li>");
                 sb.append(domain);
                 if (numlinks >= maxlinks)
@@ -320,9 +325,9 @@ public class ExternalLinkPopularity
                 else
                     sb.append(" links; Linksearch: ");
                 sb.append("<a href=\"");
-                sb.append(wiki.getPageURL("Special:Linksearch/*." + domain));
+                sb.append(wiki.getPageUrl("Special:Linksearch/*." + domain));
                 sb.append("\">http</a> <a href=\"");
-                sb.append(wiki.getPageURL("Special:Linksearch/https://*." + domain));
+                sb.append(wiki.getPageUrl("Special:Linksearch/https://*." + domain));
                 sb.append("\">https</a>)\n");
                 scores.accept(numlinks);
                 dss.accept(numlinks);
@@ -347,57 +352,12 @@ public class ExternalLinkPopularity
                 sb.append(temp.length);
                 sb.append(String.format("\n<li>MEAN: %.1f\n", dss.getAverage()));
                 Arrays.sort(temp);
-                double[] quartiles = quartiles(temp);
+                double[] quartiles = MathsAndStats.quartiles(temp);
                 sb.append(String.format("<li>Q1: %.1f\n", quartiles[0]));
-                sb.append(String.format("<li>MEDIAN: %.1f\n", median(temp)));
+                sb.append(String.format("<li>MEDIAN: %.1f\n", MathsAndStats.median(temp)));
                 sb.append(String.format("<li>Q3: %.1f\n</ul>\n", quartiles[1]));
             }
         });
         return sb.toString();
-    }
-        
-    // see https://en.wikipedia.org/wiki/Quartile (method 3)
-    public static double[] quartiles(double[] values)
-    {
-        // Shit that should be in the JDK, part 2.
-        if (values.length < 4)
-            return new double[] { Double.NaN, Double.NaN };
-        
-        int middle = values.length / 2;
-        int n = values.length / 4;
-        double[] ret = new double[2];
-        
-        switch (values.length % 4)
-        {
-            case 0:
-            case 2:
-                double[] temp = Arrays.copyOfRange(values, 0, middle - 1);
-                ret[0] = median(temp);
-                temp = Arrays.copyOfRange(values, middle, values.length - 1);
-                ret[1] = median(temp);
-                return ret;
-            case 1:
-                ret[0] = values[n - 1]/4 + values[n] * 3/4;
-                ret[1] = values[3*n] * 3/4 + values[3*n + 1]/4;
-                return ret;
-            case 3:
-                ret[0] = values[n] * 3/4 + values[n+1]/4;
-                ret[1] = values[3*n + 1]/4 + values[3*n+2] * 3/4;
-                return ret;
-        }
-        throw new AssertionError("Unreachable.");
-    }
-    
-    public static double median(double[] values)
-    {
-        // Shit that should be in the JDK, part 1.
-        if (values.length < 1)
-            return Double.NaN;
-        
-        int middle = values.length / 2;
-        if (values.length % 2 == 1)
-            return values[middle];
-        else
-            return (values[middle - 1] + values[middle])/2;
     }
 }
