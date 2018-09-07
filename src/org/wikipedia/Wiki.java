@@ -481,8 +481,8 @@ public class Wiki implements Comparable<Wiki>
     private List<String> watchlist = null;
 
     // preferences
-    protected int max = 500;
-    protected int slowmax = 50;
+    private int max = 500;
+    private int slowmax = 50;
     private int throttle = 10000;
     private int maxlag = 5;
     private int assertion = ASSERT_NONE; // assertion mode
