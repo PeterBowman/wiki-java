@@ -483,7 +483,6 @@ public class Wiki implements Comparable<Wiki>
 
         logger.setLevel(loglevel);
         logger.log(Level.CONFIG, "[{0}] Using Wiki.java {1}", new Object[] { domain, version });
-        CookieHandler.setDefault(cookies);
     }
 
     /**
@@ -8208,6 +8207,7 @@ public class Wiki implements Comparable<Wiki>
                     tries++;
                     throw new HttpRetryException("Database lagged.", 503);
                 }
+                grabCookies(connection);
 
                 // get the response from the server
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(
@@ -8353,6 +8353,15 @@ public class Wiki implements Comparable<Wiki>
         if (zipped)
             u.setRequestProperty("Accept-encoding", "gzip");
         u.setRequestProperty("User-Agent", useragent);
+        StringBuilder sb = new StringBuilder(100);
+        for (HttpCookie cookie : cookies.getCookieStore().getCookies())
+        {
+            sb.append(cookie.getName());
+            sb.append("=");
+            sb.append(cookie.getValue());
+            sb.append("; ");
+        }
+        u.setRequestProperty("Cookie", sb.toString());
         return u;
     }
 
@@ -8648,6 +8657,28 @@ public class Wiki implements Comparable<Wiki>
         if (Boolean.TRUE.equals(protectionstate.get("cascade")))
             return user.isAllowedTo("editprotected");
         return true;
+    }
+
+    // cookie methods
+
+    /**
+     *  Grabs cookies from the URL connection provided.
+     *  @param u an unconnected URLConnection
+     */
+    private void grabCookies(URLConnection u)
+    {
+        String headerName;
+        for (int i = 1; (headerName = u.getHeaderFieldKey(i)) != null; i++)
+            if (headerName.equals("Set-Cookie"))
+            {
+                String cookie = u.getHeaderField(i);
+                cookie = cookie.substring(0, cookie.indexOf(';'));
+                String value = cookie.substring(cookie.indexOf('=') + 1, cookie.length());
+                // these cookies were pruned, but are still sent for some reason?
+                // TODO: when these cookies are no longer sent, remove this test
+                if (!value.equals("deleted"))
+                    cookies.getCookieStore().add(null, HttpCookie.parse(cookie).get(0));
+            }
     }
 
     // logging methods
