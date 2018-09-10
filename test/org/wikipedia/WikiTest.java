@@ -133,6 +133,8 @@ public class WikiTest
         catch (AssertionError expected)
         {
         }
+        enWiki.setAssertionMode(Wiki.ASSERT_NONE);
+        enWiki.getPageText("Main Page"); // no exception        
     }
 
     @Test
@@ -812,7 +814,8 @@ public class WikiTest
         assertEquals("getPageInfo: Main Page display title", "Main Page", pageinfo[0].get("displaytitle"));
         assertEquals("getPageInfo: identity", pages[0], pageinfo[0].get("inputpagename"));
         assertEquals("getPageInfo: normalized identity", pages[0], pageinfo[0].get("pagename"));
-
+        assertTrue("getPageInfo: allowed actions", ((List)pageinfo[0].get("allowedactions")).isEmpty());
+        
         // different display title
         assertEquals("getPageInfo: iPod display title", "iPod", pageinfo[1].get("displaytitle"));
 
@@ -942,8 +945,11 @@ public class WikiTest
     {
         assertEquals("normalize", "Blah", enWiki.normalize("Blah"));
         assertEquals("normalize", "Blah", enWiki.normalize("blah"));
+        assertEquals("normalize: section", "Blah", enWiki.normalize("Blah#Section"));
+        assertEquals("normalize: colon", "Blah", enWiki.normalize(":Blah"));
         assertEquals("normalize", "File:Blah.jpg", enWiki.normalize("File:Blah.jpg"));
         assertEquals("normalize", "File:Blah.jpg", enWiki.normalize("file:blah.jpg"));
+        assertEquals("normalize: complex", "File:Blah.jpg", enWiki.normalize(":file:Blah.jpg#Copyright"));
         assertEquals("normalize", "Category:Wikipedia:blah", enWiki.normalize("Category:Wikipedia:blah"));
         assertEquals("normalize: namespace i18n", "Hilfe Diskussion:Glossar", deWiki.normalize("Help talk:Glossar"));
         assertEquals("normalize: namespace alias", "Wikipedia:V", enWiki.normalize("WP:V"));
@@ -1374,6 +1380,10 @@ public class WikiTest
         Wiki.Revision rev2 = testWiki.getRevision(217080L);
         assertEquals("Revision.equals", rev1, rev2);
         assertEquals("Revision.hashCode", rev1.hashCode(), rev2.hashCode());
+        // exported revisions
+        // https://de.wikipedia.org/w/index.php?title=University_of_Kashmir&diff=prev&oldid=159785234
+        // https://en.wikipedia.org/w/index.php?title=University_of_Kashmir&diff=prev&oldid=558893308
+        assertFalse("Revision.equals: exported revisions", deWiki.getRevision(159785234L).equals(enWiki.getRevision(558893308L)));
         // https://test.wikipedia.org/wiki/Special:Permanentlink/275553
         // RevisionDeleted, therefore need to test for NPEs
         rev1 = testWiki.getRevision(275553L);
