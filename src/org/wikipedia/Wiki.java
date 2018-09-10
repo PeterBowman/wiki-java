@@ -420,7 +420,7 @@ public class Wiki implements Comparable<Wiki>
     private ArrayList<Integer> ns_subpages = null;
 
     // user management
-    private final CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+    private final CookieManager cookies;
     private User user;
     private int statuscounter = 0;
 
@@ -483,6 +483,7 @@ public class Wiki implements Comparable<Wiki>
 
         logger.setLevel(loglevel);
         logger.log(Level.CONFIG, "[{0}] Using Wiki.java {1}", new Object[] { domain, version });
+        cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
     }
 
     /**
@@ -1696,10 +1697,13 @@ public class Wiki implements Comparable<Wiki>
                 
                 // Add allowed actions. Allows to check whether an action is
                 // permissible, but doesn't give the reason why if it is disallowed.
-                int start = item.indexOf("<actions") + 9;
+                int start = item.indexOf("<actions") + 8;
                 String actions = item.substring(start, item.indexOf("/>", start));
-                actions = actions.replace("=\"\"", "");
-                List<String> allowed = Arrays.asList(actions.split("\\s"));
+                String[] actionsarray = actions.replace("=\"\"", "").split("\\s");
+                List<String> allowed = new ArrayList<>();
+                for (String action : actionsarray)
+                    if (!action.isEmpty())
+                        allowed.add(action);
                 tempmap.put("allowedactions", allowed);
 
                 metamap.put(parsedtitle, tempmap);
@@ -8184,8 +8188,22 @@ public class Wiki implements Comparable<Wiki>
             tries--;
             try
             {
-                // actually make the request
-                URLConnection connection = makeConnection(url);
+                // Cookie handling should be handled locally instead of setting
+                // the system wide cookie manager to make sure a local state is
+                // saved per instance
+                // modified from https://stackoverflow.com/questions/16150089
+                // see https://github.com/MER-C/wiki-java/issues/157
+                URLConnection connection = makeConnection(url);                
+                CookieStore store = cookies.getCookieStore();
+                List<HttpCookie> cookielist = store.getCookies();
+                if (!cookielist.isEmpty())
+                {
+                    StringJoiner sb = new StringJoiner(";");
+                    for (HttpCookie cookie : cookielist)
+                        sb.add(cookie.toString());
+                    connection.setRequestProperty("Cookie", sb.toString());
+                }
+                        
                 if (isPOST)
                 {
                     connection.setDoOutput(true);
@@ -8219,9 +8237,14 @@ public class Wiki implements Comparable<Wiki>
                     tries++;
                     throw new HttpRetryException("Database lagged.", 503);
                 }
-                grabCookies(connection);
 
                 // get the response from the server
+                Map<String, List<String>> headerFields = connection.getHeaderFields();
+                List<String> cookiesheader = headerFields.get("Set-Cookie");
+                if (cookiesheader != null)
+                    for (String cookie : cookiesheader)
+                        for (HttpCookie hc : HttpCookie.parse(cookie))
+                            store.add(null, hc);        
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(
                     zipped ? new GZIPInputStream(connection.getInputStream()) : connection.getInputStream(), "UTF-8")))
                 {
@@ -8365,15 +8388,6 @@ public class Wiki implements Comparable<Wiki>
         if (zipped)
             u.setRequestProperty("Accept-encoding", "gzip");
         u.setRequestProperty("User-Agent", useragent);
-        StringBuilder sb = new StringBuilder(100);
-        for (HttpCookie cookie : cookies.getCookieStore().getCookies())
-        {
-            sb.append(cookie.getName());
-            sb.append("=");
-            sb.append(cookie.getValue());
-            sb.append("; ");
-        }
-        u.setRequestProperty("Cookie", sb.toString());
         return u;
     }
 
@@ -8672,28 +8686,6 @@ public class Wiki implements Comparable<Wiki>
         if (Boolean.TRUE.equals(protectionstate.get("cascade")))
             return user.isAllowedTo("editprotected");
         return true;
-    }
-
-    // cookie methods
-
-    /**
-     *  Grabs cookies from the URL connection provided.
-     *  @param u an unconnected URLConnection
-     */
-    private void grabCookies(URLConnection u)
-    {
-        String headerName;
-        for (int i = 1; (headerName = u.getHeaderFieldKey(i)) != null; i++)
-            if (headerName.equals("Set-Cookie"))
-            {
-                String cookie = u.getHeaderField(i);
-                cookie = cookie.substring(0, cookie.indexOf(';'));
-                String value = cookie.substring(cookie.indexOf('=') + 1, cookie.length());
-                // these cookies were pruned, but are still sent for some reason?
-                // TODO: when these cookies are no longer sent, remove this test
-                if (!value.equals("deleted"))
-                    cookies.getCookieStore().add(null, HttpCookie.parse(cookie).get(0));
-            }
     }
 
     // logging methods
