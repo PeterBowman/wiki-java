@@ -413,7 +413,7 @@ public class Wiki implements Comparable<Wiki>
     private boolean siteinfofetched = false;
     private boolean wgCapitalLinks = true;
     private String mwVersion;
-    private ZoneId timezone = ZoneId.of("UTC");
+    private ZoneId timezone = ZoneOffset.UTC;
     private Locale locale = Locale.ENGLISH;
     private List<String> extensions = Collections.emptyList();
     private LinkedHashMap<String, Integer> namespaces = null;
@@ -2333,8 +2333,9 @@ public class Wiki implements Comparable<Wiki>
         if (revisions.length != 0)
         {
             StringJoiner sj = new StringJoiner("|");
+            // https://phabricator.wikimedia.org/T16449
             for (Wiki.Revision revision : revisions)
-                sj.add(revision.getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+                sj.add(revision.getTimestamp().withOffsetSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
             postparams.put("timestamps", sj.toString());
         }
         String response = makeApiCall(getparams, postparams, "undelete");
@@ -3347,8 +3348,9 @@ public class Wiki implements Comparable<Wiki>
                 pro.append(value);
                 pro.append('|');
 
+                // https://phabricator.wikimedia.org/T16449
                 OffsetDateTime expiry = (OffsetDateTime)protectionstate.get(key + "expiry");
-                exp.append(expiry == null ? "never" : expiry.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+                exp.append(expiry == null ? "never" : expiry.withOffsetSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
                 exp.append('|');
             }
         });
@@ -7896,13 +7898,16 @@ public class Wiki implements Comparable<Wiki>
          */
         protected Map<String, String> addDateRangeParameters()
         {
+            // https://phabricator.wikimedia.org/T16449
             Map<String, String> temp = new HashMap<>();
             OffsetDateTime odt = reverse ? earliest : latest;
             if (odt != null)
-                temp.put(requestType + "start", odt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+                temp.put(requestType + "start", 
+                    odt.withOffsetSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
             odt = reverse ? latest : earliest;
             if (odt != null)
-                temp.put(requestType + "end", odt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+                temp.put(requestType + "end", 
+                    odt.withOffsetSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
             return temp;
         }
 
@@ -8042,14 +8047,15 @@ public class Wiki implements Comparable<Wiki>
             // <continue rccontinue="20170924064528|986351741" continue="-||" />
             if (line.contains("<continue "))
             {
-                int a = line.indexOf("<continue ") + 10;
+                int a = line.indexOf("<continue ") + 9;
                 int b = line.indexOf(" />", a);
-                String cont = line.substring(a, b).trim();
-                for (String contAttr : cont.split("=\\S+"))
-                    // The above regex will leave a leading space in some attribute names,
-                    // which need to be trimmed before storing them in the parameter map.
-                    // This allows to detect the "continue" attribute (without prefix).
-                    getparams.put(contAttr.trim(), parseAttribute(cont, contAttr, 0));
+                String cont = line.substring(a, b);
+                for (String contpair : cont.split("\" "))
+                {
+                    contpair = " " + contpair.trim();
+                    String contattr = contpair.substring(0, contpair.indexOf("=\""));
+                    getparams.put(contattr.trim(), parseAttribute(cont, contattr, 0));
+                }                
             }
 
             parser.accept(line, results);
@@ -8310,8 +8316,8 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Converts HTTP POST parameters to Strings. See {@link
-     *  #makeHTTPRequest(String, Map, String)} for the description.
+     *  Converts HTTP POST parameters to Strings. See {@link #makeApiCall(Map, 
+     *  Map, String)} for the description.
      *  @param param the parameter to convert
      *  @return that parameter, as a String
      *  @throws UnsupportedOperationException if param is not a supported data type
@@ -8329,7 +8335,8 @@ public class Wiki implements Comparable<Wiki>
         else if (param instanceof OffsetDateTime)
         {
             OffsetDateTime date = (OffsetDateTime)param;
-            return date.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            // https://phabricator.wikimedia.org/T16449
+            return date.atZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         }
         else if (param instanceof Collection)
         {
