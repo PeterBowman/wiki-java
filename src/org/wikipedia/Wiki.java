@@ -1834,7 +1834,7 @@ public class Wiki implements Comparable<Wiki>
         boolean[] ret = new boolean[titles.length];
         Map<String, Object>[] info = getPageInfo(titles);
         for (int i = 0; i < titles.length; i++)
-            ret[i] = (Boolean)info[i].get("exists");
+            ret[i] = info[i] != null && (Boolean)info[i].get("exists");
         return ret;
     }
 
