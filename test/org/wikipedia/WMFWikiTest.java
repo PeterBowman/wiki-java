@@ -38,7 +38,7 @@ public class WMFWikiTest
      */
     public WMFWikiTest()
     {
-        enWiki = WMFWiki.createInstance("en.wikipedia.org");
+        enWiki = WMFWiki.newSession("en.wikipedia.org");
         enWiki.setMaxLag(-1);
     }
     
@@ -106,5 +106,28 @@ public class WMFWikiTest
         assertEquals(OffsetDateTime.parse("2018-04-05T22:58:14Z"), ale.getTimestamp());
         assertEquals("edit", ale.getAction());
         // TODO: test details when they are overhauled
+    }
+    
+    @Test
+    public void getLedeAsPlainText() throws Exception
+    {
+        List<String> pages = Arrays.asList("Java", "Create a page", "Albert Einstein");
+        List<String> text = enWiki.getLedeAsPlainText(pages);
+        // Cannot assert more than the first two words because the result is
+        // non-deterministic. Test is potentially fragile.
+        assertTrue(text.get(0).startsWith("Java "));
+        assertTrue(text.get(1) == null);
+        assertTrue(text.get(2).startsWith("Albert Einstein "));
+    }
+    
+    @Test
+    public void getPlainText() throws Exception
+    {
+        List<String> pages = Arrays.asList("Java", "Create a page", "Albert Einstein");
+        List<String> shorttext = enWiki.getLedeAsPlainText(pages);
+        List<String> text = enWiki.getPlainText(pages);
+        assertTrue(text.get(0).startsWith(shorttext.get(0)));
+        assertTrue(text.get(1) == null);
+        assertTrue(text.get(2).startsWith(shorttext.get(2)));
     }
 }

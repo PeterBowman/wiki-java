@@ -85,7 +85,7 @@ public class ArticleEditorIntersector
             .addSingleArgumentFlag("--file", "file", "Read in the list of articles from the given file.")
             .parse(args);
         
-        Wiki wiki = Wiki.createInstance(parsedargs.getOrDefault("--wiki", "en.wikipedia.org"));
+        Wiki wiki = Wiki.newSession(parsedargs.getOrDefault("--wiki", "en.wikipedia.org"));
         String category = parsedargs.get("--category");
         String user = parsedargs.get("--contribs");
         boolean adminmode = parsedargs.containsKey("--adminmode");
@@ -395,28 +395,29 @@ public class ArticleEditorIntersector
         Set<String> keyset = results.keySet();
         if (noadmin || nobot || noanon)
         {
-            String[] usernames = keyset.toArray(new String[keyset.size()]);
-            Wiki.User[] userinfo = wiki.getUsers(usernames);
-            for (int i = 0; i < userinfo.length; i++)
+            List<String> usernames = new ArrayList<>(keyset);
+            List<Wiki.User> userinfo = wiki.getUsers(usernames);
+            for (int i = 0; i < userinfo.size(); i++)
             {
                 // skip IPs because getUsers returns null
-                if (userinfo[i] == null)
+                Wiki.User user = userinfo.get(i);
+                if (user == null)
                 {
                     if (noanon)
-                        keyset.remove(usernames[i]);
+                        keyset.remove(usernames.get(i));
                     continue;
                 }
                 
-                for (String group : userinfo[i].getGroups())
+                for (String group : user.getGroups())
                 {
                     if (group.equals("sysop") && noadmin)
                     {
-                        keyset.remove(usernames[i]);
+                        keyset.remove(usernames.get(i));
                         continue;
                     }
                     if (group.equals("bot") && nobot)
                     {
-                        keyset.remove(usernames[i]);
+                        keyset.remove(usernames.get(i));
                         continue;
                     }
                 }
