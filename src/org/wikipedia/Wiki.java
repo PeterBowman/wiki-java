@@ -1,6 +1,6 @@
 /**
- *  @(#)Wiki.java 0.35 20/05/2018
- *  Copyright (C) 2007 - 2018 MER-C and contributors
+ *  @(#)Wiki.java 0.36 08/02/2019
+ *  Copyright (C) 2007 - 2019 MER-C and contributors
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -55,7 +55,7 @@ import javax.security.auth.login.*;
  *  tracker</a>.
  *
  *  @author MER-C and contributors
- *  @version 0.35
+ *  @version 0.36
  */
 public class Wiki implements Comparable<Wiki>
 {
@@ -383,7 +383,7 @@ public class Wiki implements Comparable<Wiki>
         unknown;
     }
 
-    private static final String version = "0.35";
+    private static final String version = "0.36";
 
     // fundamental URL strings
     private final String protocol, domain, scriptPath;
@@ -2375,29 +2375,41 @@ public class Wiki implements Comparable<Wiki>
      *  redirected images, both the source and target page are included.
      *
      *  @param title a page
-     *  @return the list of images used in the page.  Note that each String in
-     *  the array will begin with the prefix "File:"
+     *  @return the list of images used in the page.
      *  @throws IOException if a network error occurs
      *  @since 0.16
      */
     public String[] getImagesOnPage(String title) throws IOException
     {
+        return getImagesOnPage(Arrays.asList(title)).get(0).toArray(new String[0]);
+    }
+    
+    /**
+     *  Gets the list of images used on the given pages. If there are redirected
+     *  images, both the source and target page are included. Return order is 
+     *  the same as the input order.
+     *
+     *  @param titles a list of pages
+     *  @return the list of images used in those pages.
+     *  @throws IOException if a network error occurs
+     *  @since 0.36
+     */
+    public List<List<String>> getImagesOnPage(List<String> titles) throws IOException
+    {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "images");
-        getparams.put("titles", normalize(title));
-
-        List<String> images = makeListQuery("im", getparams, null, "getImagesOnPage", -1, (line, results) ->
+        
+        List<List<String>> ret = makeVectorizedQuery("im", getparams, titles, 
+            "getImagesOnPage", -1, (data, result) ->
         {
             // xml form: <im ns="6" title="File:Example.jpg" />
-            for (int a = line.indexOf("<im "); a > 0; a = line.indexOf("<im ", ++a))
-                results.add(parseAttribute(line, "title", a));
+            for (int a = data.indexOf("<im "); a > 0; a = data.indexOf("<im ", ++a))
+                result.add(parseAttribute(data, "title", a));
         });
-
-        int temp = images.size();
-        log(Level.INFO, "getImagesOnPage", "Successfully retrieved images used on " + title + " (" + temp + " images)");
-        return images.toArray(new String[temp]);
+        log(Level.INFO, "getImagesOnPage", "Successfully retrieved images used on " + titles.size() + " pages.");
+        return ret;
     }
-
+ 
     /**
      *  Gets the list of categories a particular page is in. Includes hidden
      *  categories.
@@ -2445,61 +2457,20 @@ public class Wiki implements Comparable<Wiki>
             limit = helper.limit();
         }
         
-        // copy array so redirect resolver doesn't overwrite
-        String[] titles2 = new String[titles.size()];
-        titles.toArray(titles2);
-        List<Map<String, List<String>>> stuff = new ArrayList<>();
-        Map<String, Object> postparams = new HashMap<>();
-        for (String temp : constructTitleString(titles2))
+        List<List<String>> ret = makeVectorizedQuery("cl", getparams, titles, 
+            "getCategories", limit, (data, result) ->
         {
-            postparams.put("titles", temp);
-            stuff.addAll(makeListQuery("cl", getparams, postparams, "getCategories", limit, (line, results) ->
+            // xml form: <cl ns="14" title="Category:1879 births" sortkey=(long string) sortkeyprefix="" />
+            // or      : <cl ns="14" title="Category:Images for cleanup" sortkey=(long string) sortkeyprefix="Borders" hidden="" />
+            for (int a = data.indexOf("<cl "); a > 0; a = data.indexOf("<cl ", ++a))
             {
-                // Split the result into individual listings for each article.
-                String[] x = line.split("<page ");
-                if (resolveredirect)
-                    resolveRedirectParser(titles2, x[0]);
-
-                // Skip first element to remove front crud.
-                for (int i = 1; i < x.length; i++)
-                {
-                    // xml form: <cl ns="14" title="Category:1879 births" sortkey=(long string) sortkeyprefix="" />
-                    // or      : <cl ns="14" title="Category:Images for cleanup" sortkey=(long string) sortkeyprefix="Borders" hidden="" />
-                    String parsedtitle = parseAttribute(x[i], "title", 0);
-                    List<String> list = new ArrayList<>();
-                    for (int a = x[i].indexOf("<cl "); a > 0; a = x[i].indexOf("<cl ", ++a))
-                    {
-                        String category = parseAttribute(x[i], "title", a);
-                        if (sortkey)
-                            category += ("|" + parseAttribute(x[i], "sortkeyprefix", a));
-                        list.add(category);
-                    }
-                    Map<String, List<String>> intermediate = new HashMap<>();
-                    intermediate.put(parsedtitle, list);
-                    results.add(intermediate);
-                }
-            }));
-        }
-
-        // fill the return list
-        List<List<String>> ret = new ArrayList<>();
-        List<String> normtitles = new ArrayList<>();
-        for (String localtitle : titles2)
-        {
-            normtitles.add(normalize(localtitle));
-            ret.add(new ArrayList<>());
-        }
-        // then retrieve the results from the intermediate list of maps,
-        // ensuring results correspond to inputs
-        stuff.forEach(map ->
-        {
-            String parsedtitle = map.keySet().iterator().next();
-            List<String> templates = map.get(parsedtitle);
-            for (int i = 0; i < titles2.length; i++)
-                if (normtitles.get(i).equals(parsedtitle))
-                    ret.get(i).addAll(templates);
+                String category = parseAttribute(data, "title", a);
+                if (sortkey)
+                    category += ("|" + parseAttribute(data, "sortkeyprefix", a));
+                result.add(category);
+            }
         });
-        log(Level.INFO, "getCategories", "Successfully retrieved categories used on " + titles2.length + " pages.");
+        log(Level.INFO, "getCategories", "Successfully retrieved categories used on " + titles.size() + " pages.");
         return ret;
     }
 
@@ -2515,7 +2486,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public String[] getTemplates(String title, int... ns) throws IOException
     {
-        List<String> temp = getTemplates(new String[] { title }, ns)[0];
+        List<String> temp = getTemplates(Arrays.asList(title), ns).get(0);
         return temp.toArray(new String[temp.size()]);
     }
 
@@ -2530,7 +2501,7 @@ public class Wiki implements Comparable<Wiki>
      *  @throws IOException if a network error occurs
      *  @since 0.32
      */
-    public List<String>[] getTemplates(String[] titles, int... ns) throws IOException
+    public List<List<String>> getTemplates(List<String> titles, int... ns) throws IOException
     {
         return getTemplates(titles, null, ns);
     }
@@ -2549,9 +2520,9 @@ public class Wiki implements Comparable<Wiki>
     public boolean[] pageHasTemplate(String[] pages, String template) throws IOException
     {
         boolean[] ret = new boolean[pages.length];
-        List<String>[] result = getTemplates(pages, template);
-        for (int i = 0; i < result.length; i++)
-            ret[i] = !(result[i].isEmpty());
+        List<List<String>> result = getTemplates(Arrays.asList(pages), template);
+        for (int i = 0; i < result.size(); i++)
+            ret[i] = !(result.get(i).isEmpty());
         return ret;
     }
 
@@ -2568,7 +2539,7 @@ public class Wiki implements Comparable<Wiki>
      *  @throws IOException if a network error occurs
      *  @since 0.32
      */
-    protected List<String>[] getTemplates(String[] titles, String template, int... ns) throws IOException
+    protected List<List<String>> getTemplates(List<String> titles, String template, int... ns) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "templates");
@@ -2577,48 +2548,15 @@ public class Wiki implements Comparable<Wiki>
         if (template != null)
             getparams.put("tltemplates", normalize(template));
 
-        // copy array so redirect resolver doesn't overwrite
-        String[] titles2 = Arrays.copyOf(titles, titles.length);
-        List<Map<String, List<String>>> stuff = new ArrayList<>();
-        Map<String, Object> postparams = new HashMap<>();
-        for (String temp : constructTitleString(titles))
+        List<List<String>> ret = makeVectorizedQuery("tl", getparams, titles, 
+            "getTemplates", -1, (data, result) ->
         {
-            postparams.put("titles", temp);
-            stuff.addAll(makeListQuery("tl", getparams, postparams, "getTemplates", -1, (line, results) ->
-            {
-                // Split the result into individual listings for each article.
-                String[] x = line.split("<page ");
-                if (resolveredirect)
-                    resolveRedirectParser(titles2, x[0]);
-                // Skip first element to remove front crud.
-                for (int i = 1; i < x.length; i++)
-                {
-                    // xml form: <tl ns="10" title="Template:POTD" />
-                    String parsedtitle = parseAttribute(x[i], "title", 0);
-                    List<String> list = new ArrayList<>();
-                    for (int a = x[i].indexOf("<tl "); a > 0; a = x[i].indexOf("<tl ", ++a))
-                        list.add(parseAttribute(x[i], "title", a));
-                    Map<String, List<String>> intermediate = new HashMap<>();
-                    intermediate.put(parsedtitle, list);
-                    results.add(intermediate);
-                }
-            }));
-        }
-
-        // merge and reorder
-        List<String>[] out = new ArrayList[titles.length];
-        Arrays.setAll(out, ArrayList::new);
-        stuff.forEach(entry ->
-        {
-            String parsedtitle = entry.keySet().iterator().next();
-            List<String> templates = entry.get(parsedtitle);
-            for (int i = 0; i < titles2.length; i++)
-                if (normalize(titles2[i]).equals(parsedtitle))
-                    out[i].addAll(templates);
+            // xml form: <tl ns="10" title="Template:POTD" />
+            for (int a = data.indexOf("<tl "); a > 0; a = data.indexOf("<tl ", ++a))
+                result.add(parseAttribute(data, "title", a));                
         });
-
-        log(Level.INFO, "getTemplates", "Successfully retrieved templates used on " + titles.length + " pages.");
-        return out;
+        log(Level.INFO, "getTemplates", "Successfully retrieved templates used on " + titles.size() + " pages.");
+        return ret;
     }
 
     /**
@@ -2716,59 +2654,18 @@ public class Wiki implements Comparable<Wiki>
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "extlinks");
 
-        // copy array so redirect resolver doesn't overwrite
-        String[] titles2 = new String[titles.size()];
-        titles.toArray(titles2);
-        List<Map<String, List<String>>> stuff = new ArrayList<>();
-        Map<String, Object> postparams = new HashMap<>();
-        for (String temp : constructTitleString(titles2))
+        List<List<String>> ret = makeVectorizedQuery("el", getparams, titles, 
+            "getExternalLinksOnPage", -1, (data, result) ->
         {
-            postparams.put("titles", temp);
-            stuff.addAll(makeListQuery("el", getparams, postparams, "getExternalLinksOnPage", -1, (line, results) ->
+            // xml form: <el stuff>http://example.com</el>
+            for (int a = data.indexOf("<el "); a > 0; a = data.indexOf("<el ", ++a))
             {
-                // Split the result into individual listings for each article.
-                String[] x = line.split("<page ");
-                if (resolveredirect)
-                    resolveRedirectParser(titles2, x[0]);
-
-                // Skip first element to remove front crud.
-                for (int i = 1; i < x.length; i++)
-                {
-                    // xml form: <el stuff>http://example.com</el>
-                    String parsedtitle = parseAttribute(x[i], "title", 0);
-                    List<String> list = new ArrayList<>();
-                    for (int a = x[i].indexOf("<el "); a > 0; a = x[i].indexOf("<el ", ++a))
-                    {
-                        int start = x[i].indexOf('>', a) + 1;
-                        int end = x[i].indexOf("</el>", start);
-                        list.add(decode(x[i].substring(start, end)));
-                    }
-                    Map<String, List<String>> intermediate = new HashMap<>();
-                    intermediate.put(parsedtitle, list);
-                    results.add(intermediate);
-                }
-            }));
-        }
-
-        // fill the return list
-        List<List<String>> ret = new ArrayList<>();
-        List<String> normtitles = new ArrayList<>();
-        for (String localtitle : titles2)
-        {
-            normtitles.add(normalize(localtitle));
-            ret.add(new ArrayList<>());
-        }
-        // then retrieve the results from the intermediate list of maps,
-        // ensuring results correspond to inputs
-        stuff.forEach(map ->
-        {
-            String parsedtitle = map.keySet().iterator().next();
-            List<String> templates = map.get(parsedtitle);
-            for (int i = 0; i < titles2.length; i++)
-                if (normtitles.get(i).equals(parsedtitle))
-                    ret.get(i).addAll(templates);
-        });
-        log(Level.INFO, "getExternalLinksOnPage", "Successfully retrieved external links used on " + titles2.length + " pages.");
+                int start = data.indexOf('>', a) + 1;
+                int end = data.indexOf("</el>", start);
+                result.add(decode(data.substring(start, end)));
+            }            
+        });        
+        log(Level.INFO, "getExternalLinksOnPage", "Successfully retrieved external links used on " + titles.size() + " pages.");
         return ret;
     }
 
@@ -3353,8 +3250,8 @@ public class Wiki implements Comparable<Wiki>
                 exp.append('|');
             }
         });
-        pro.delete(pro.length() - 3, pro.length());
-        exp.delete(exp.length() - 3, exp.length());
+        pro.delete(pro.length() - 1, pro.length());
+        exp.delete(exp.length() - 1, exp.length());
         postparams.put("protections", pro);
         postparams.put("expiry", exp);
         String response = makeApiCall(getparams, postparams, "protect");
@@ -5469,42 +5366,40 @@ public class Wiki implements Comparable<Wiki>
      */
     public String[] whatLinksHere(String title, int... ns) throws IOException
     {
-        return whatLinksHere(title, false, ns);
+        return whatLinksHere(Arrays.asList(title), false, ns).toArray(new String[0]);
     }
 
     /**
-     *  Returns a list of all pages linking to this page within the specified
-     *  namespaces. Alternatively, we can retrieve a list of what redirects to a
-     *  page by setting <var>redirects</var> to true. Equivalent to
-     *  [[Special:Whatlinkshere]].
+     *  Returns lists of all pages linking to the given pages within the specified
+     *  namespaces. Output order is the same as input order. Alternatively, we 
+     *  can retrieve a list of what redirects to a page by setting 
+     *  <var>redirects</var> to true. Equivalent to [[Special:Whatlinkshere]].
      *
-     *  @param title the title of the page
+     *  @param titles a list of titles
      *  @param ns a list of namespaces to filter by, empty = all namespaces.
      *  @param redirects whether we should limit to redirects only
      *  @return the list of pages linking to the specified page
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @since 0.10
      */
-    public String[] whatLinksHere(String title, boolean redirects, int... ns) throws IOException
+    public List<List<String>> whatLinksHere(List<String> titles, boolean redirects, int... ns) throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
-        getparams.put("list", "backlinks");
-        getparams.put("bltitle", normalize(title));
+        getparams.put("prop", "linkshere");
         if (ns.length > 0)
-            getparams.put("blnamespace", constructNamespaceString(ns));
+            getparams.put("lhnamespace", constructNamespaceString(ns));
         if (redirects)
-            getparams.put("blfilterredir", "redirects");
+            getparams.put("lhshow", "redirect");
 
-        List<String> pages = makeListQuery("bl", getparams, null, "whatLinksHere", -1, (line, results) ->
-        {
-            // xml form: <bl pageid="217224" ns="0" title="Mainpage" redirect="" />
-            for (int x = line.indexOf("<bl "); x > 0; x = line.indexOf("<bl ", ++x))
-                results.add(parseAttribute(line, "title", x));
+        List<List<String>> ret = makeVectorizedQuery("lh", getparams, titles, 
+            "whatLinksHere", -1, (data, result) ->
+        {        
+            // xml form: <lh pageid="1463" ns="1" title="Talk:Apollo program" />
+            for (int a = data.indexOf("<lh "); a > 0; a = data.indexOf("<lh ", ++a))
+                result.add(parseAttribute(data, "title", a));
         });
-
-        int size = pages.size();
-        log(Level.INFO, "whatLinksHere", "Successfully retrieved " + (redirects ? "redirects to " : "links to ") + title + " (" + size + " items)");
-        return pages.toArray(new String[size]);
+        log(Level.INFO, "whatLinksHere", "Successfully retrieved " + (redirects ? "redirects to " : "links to ") + ret.size() + " pages.");
+        return ret;
     }
 
     /**
@@ -5519,22 +5414,35 @@ public class Wiki implements Comparable<Wiki>
      */
     public String[] whatTranscludesHere(String title, int... ns) throws IOException
     {
+        return whatTranscludesHere(Arrays.asList(title), ns).toArray(new String[0]);
+    }
+    
+    /**
+     *  Returns lists of all pages transcluding to a page within the specified
+     *  namespaces. Output order is the same as the input order.
+     *
+     *  @param titles a list of titles
+     *  @param ns a list of namespaces to filter by, empty = all namespaces.
+     *  @return the lists of pages transcluding the specified pages
+     *  @throws IOException or UncheckedIOException if a network error occurs
+     *  @since 0.36
+     */
+    public List<List<String>> whatTranscludesHere(List<String> titles, int... ns) throws IOException
+    {
         Map<String, String> getparams = new HashMap<>();
-        getparams.put("list", "embeddedin");
-        getparams.put("eititle", normalize(title));
+        getparams.put("prop", "transcludedin");
         if (ns.length > 0)
-            getparams.put("einamespace", constructNamespaceString(ns));
-
-        List<String> pages = makeListQuery("ei", getparams, null, "whatTranscludesHere", -1, (line, results) ->
+            getparams.put("tinamespace", constructNamespaceString(ns));
+        
+        List<List<String>> ret = makeVectorizedQuery("ti", getparams, titles, 
+            "whatTranscludesHere", -1, (data, result) ->
         {
-            // xml form: <ei pageid="7997510" ns="0" title="Maike Evers" />
-            for (int x = line.indexOf("<ei "); x > 0; x = line.indexOf("<ei ", ++x))
-                results.add(parseAttribute(line, "title", x));
+            // xml form: <ti pageid="15199344" ns="2" title="User:Example" />
+            for (int a = data.indexOf("<ti "); a > 0; a = data.indexOf("<ti ", ++a))
+                result.add(parseAttribute(data, "title", a));
         });
-
-        int size = pages.size();
-        log(Level.INFO, "whatTranscludesHere", "Successfully retrieved transclusions of " + title + " (" + size + " items)");
-        return pages.toArray(new String[size]);
+        log(Level.INFO, "whatTranscludesHere", "Successfully retrieved transclusions for " + ret.size() + " pages.");
+        return ret;
     }
 
     /**
@@ -8010,6 +7918,73 @@ public class Wiki implements Comparable<Wiki>
     }
 
     // INTERNALS
+    
+    /**
+     *  Performs a vectorized action=query&prop=X type API query over titles.
+     *  @param queryPrefix the request type prefix (e.g. "pl" for prop=links)
+     *  @param getparams a bunch of parameters to send via HTTP GET
+     *  @param titles a list of titles
+     *  @param caller the name of the calling method
+     *  @param limit fetch no more than this many results
+     *  @param parser a BiConsumer that parses the XML returned by the MediaWiki
+     *  API into things we want, dumping them into the given List     
+     *  @return a list of results, where each element corresponds to the element
+     *  at the same index in the input title list
+     *  @since 0.36
+     *  @throws IOException if a network error occurs
+     */
+    protected List<List<String>> makeVectorizedQuery(String queryPrefix, Map<String, String> getparams,
+        List<String> titles, String caller, int limit, BiConsumer<String, List<String>> parser) throws IOException
+    {
+        // copy array so redirect resolver doesn't overwrite
+        String[] titles2 = new String[titles.size()];
+        titles.toArray(titles2);
+        List<Map<String, List<String>>> stuff = new ArrayList<>();
+        Map<String, Object> postparams = new HashMap<>();
+        for (String temp : constructTitleString(titles2))
+        {
+            postparams.put("titles", temp);
+            stuff.addAll(makeListQuery(queryPrefix, getparams, postparams, caller, -1, (line, results) ->
+            {
+                // Split the result into individual listings for each article.
+                String[] x = line.split("<page ");
+                if (resolveredirect)
+                    resolveRedirectParser(titles2, x[0]);
+
+                // Skip first element to remove front crud.
+                for (int i = 1; i < x.length; i++)
+                {
+                    String parsedtitle = parseAttribute(x[i], "title", 0);
+                    List<String> list = new ArrayList<>();
+                    parser.accept(x[i], list);
+                    
+                    Map<String, List<String>> intermediate = new HashMap<>();
+                    intermediate.put(parsedtitle, list);
+                    results.add(intermediate);
+                }
+            }));
+        }
+
+        // fill the return list
+        List<List<String>> ret = new ArrayList<>();
+        List<String> normtitles = new ArrayList<>();
+        for (String localtitle : titles2)
+        {
+            normtitles.add(normalize(localtitle));
+            ret.add(new ArrayList<>());
+        }
+        // then retrieve the results from the intermediate list of maps,
+        // ensuring results correspond to inputs
+        stuff.forEach(map ->
+        {
+            String parsedtitle = map.keySet().iterator().next();
+            List<String> templates = map.get(parsedtitle);
+            for (int i = 0; i < titles2.length; i++)
+                if (normtitles.get(i).equals(parsedtitle))
+                    ret.get(i).addAll(templates);
+        });
+        return ret;
+    }
 
     /**
      *  Fetches list-type results from the MediaWiki API.
