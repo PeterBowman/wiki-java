@@ -53,12 +53,31 @@ public class WikitextUtils
         // check for description, if not there then set it to the target
         int pipe = linktext.indexOf('|');
         if (pipe >= 0)
-            return Arrays.asList(linktext.substring(0, pipe).trim(), linktext.substring(pipe + 1).trim());
+            return List.of(linktext.substring(0, pipe).trim(), linktext.substring(pipe + 1).trim());
         else
         {
             String temp = linktext.trim();
-            return Arrays.asList(temp, temp);
+            return List.of(temp, temp);
         }        
+    }
+    
+    /**
+     *  Outputs a row of a wikitext table.
+     *  @param entries the individual cells
+     *  @return wikitext for that row
+     */
+    public static String addTableRow(List<String> entries)
+    {
+        StringBuilder sb = new StringBuilder("|-\n");
+        sb.append("| ");
+        for (int i = 0; i < entries.size() - 1; i++)
+        {
+            sb.append(entries.get(i));
+            sb.append(" || ");
+        }
+        sb.append(entries.get(entries.size() - 1));
+        sb.append("\n");
+        return sb.toString();
     }
         
     /**

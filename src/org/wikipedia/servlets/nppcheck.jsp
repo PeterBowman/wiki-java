@@ -12,11 +12,9 @@
 
     String username = ServletUtils.sanitizeForAttribute(request.getParameter("username"));
     NPPCheck.Mode mode = NPPCheck.Mode.fromString(request.getParameter("mode"));
-    String offsetparam = request.getParameter("offset");
-    if (offsetparam == null)
-        offsetparam = "0";
+    String offsetparam = Objects.requireNonNullElse(request.getParameter("offset"), "0");  
 %>
-<%@ include file="header.jsp" %>
+<%@ include file="header.jspf" %>
 
 <p>
 This tool retrieves recent new page patrols and moves from draft/user space to 
@@ -32,6 +30,7 @@ main space for a given user (or for all users) and page metadata. A query limit 
     <td><input type=radio name=mode value="patrols" <%= mode == NPPCheck.Mode.PATROLS ? " checked" : "" %>>New page patrols
         <input type=radio name=mode value="drafts" <%= mode == NPPCheck.Mode.DRAFTS ? " checked" : "" %>>Moves from Draft to Main
         <input type=radio name=mode value="userspace" <%= mode == NPPCheck.Mode.USERSPACE ? " checked" : "" %>>Moves from User to Main
+        <input type=radio name=mode value="redirects" <%= mode == NPPCheck.Mode.REDIRECTS ? " checked" : "" %>>Redirects converted to articles
 <tr>
     <td>Show patrols from:
     <td><input type=date name=earliest value="<%= earliest %>"> to 
@@ -45,36 +44,49 @@ main space for a given user (or for all users) and page metadata. A query limit 
     if (mode == null)
     {
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
     out.println("<hr>");
 
-    Wiki enWiki = Wiki.newSession("en.wikipedia.org");
+    WMFWiki enWiki = WMFWiki.newSession("en.wikipedia.org");
     Users users = Users.of(enWiki);
     Pages pageutils = Pages.of(enWiki);
     enWiki.setMaxLag(-1);
     enWiki.setQueryLimit(7500);
     NPPCheck check = new NPPCheck(enWiki);
-    List<Wiki.LogEntry> logs = check.fetchLogs(username, earliest_odt, latest_odt, mode);
-
+    check.setReviewer(username);
+    check.setMode(mode);
+    List<? extends Wiki.Event> logs = check.fetchLogs(earliest_odt, latest_odt);
+    
     if (logs.isEmpty())
     {
 %>
 <p>No results found!
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
 
     // fetch metadata
     // limit to 50 articles per page
     int offset = Integer.parseInt(offsetparam);
-    List<Wiki.LogEntry> logsub = logs.subList(offset, Math.min(logs.size(), offset + 51));
+    List<? extends Wiki.Event> logsub = logs.subList(offset, Math.min(logs.size(), offset + 51));
     List<Duration> dt_patrol = Events.timeBetweenEvents(logsub);
     dt_patrol.add(Duration.ofSeconds(-1));
     if (logsub.size() == 51)
         logsub.remove(50);
-    Map<String, Object>[] pageinfo = check.fetchMetadata(logsub, mode);
+    List<Map<String, Object>> pageinfo = check.fetchMetadata(logsub);
+    pageinfo = check.fetchCreatorMetadata(pageinfo);
+    List<String> snippets = check.fetchSnippets(logsub);
+    List<Wiki.User> reviewerdata = check.fetchReviewerMetadata(logsub);
+    List<String> drafts = new ArrayList<>();
+    List<Map<String, Object>> draftinfo = null;
+    if (mode.requiresDrafts())
+    {
+        for (Wiki.Event event : logsub)
+            drafts.add(event.getTitle());
+        draftinfo = enWiki.getPageInfo(drafts);    
+    }
 
     String requesturl = "./nppcheck.jsp?username=" + username + "&earliest=" + earliest
         + "&latest=" + latest + "&mode=" + request.getParameter("mode") + "&offset=";
@@ -85,32 +97,39 @@ main space for a given user (or for all users) and page metadata. A query limit 
 <table class="wikitable">
 <tr>
 <%
-    if (mode != NPPCheck.Mode.PATROLS)
+    if (mode.requiresDrafts())
         out.println("  <th>Draft");
 %>
   <th>Article
   <th>Create timestamp
-  <th>Review timestamp
-  <th>Article age at review (s)
 <%
-    if (!username.isEmpty())
+    if (mode.requiresReviews())
     {
-        out.println("<th>Time between reviews (s)");
+        out.println("  <th>Review timestamp");
+        out.println("  <th>Article age at review");
+        if (!username.isEmpty())
+        {
+            out.println("  <th>Time between reviews");
+        }
     }
 %>
   <th>Size
   <th>Author
   <th>Author registration timestamp
   <th>Author edit count
-  <th>Author age at creation (days)
-  <th>Author blocked?
+  <th>Author age at creation
+  <th>Author blocked
 <%
-    if (username.isEmpty())
-        out.println("  <th>Reviewer");
-
-    for (int i = 0; i < pageinfo.length; i++)
+    if (mode.requiresReviews() && username.isEmpty())
     {
-        Map<String, Object> info = pageinfo[i];
+        out.println("  <th>Reviewer");
+        out.println("  <th>Reviewer edit count");
+    }
+    out.println("<th>Snippet");
+
+    for (int i = 0; i < pageinfo.size(); i++)
+    {
+        Map<String, Object> info = pageinfo.get(i);
         Wiki.Revision first = (Wiki.Revision)info.get("firstrevision");
         Wiki.LogEntry entry = (Wiki.LogEntry)info.get("logentry");
         Wiki.User creator = (Wiki.User)info.get("creator");
@@ -124,8 +143,8 @@ main space for a given user (or for all users) and page metadata. A query limit 
         String creatorname = "null";
         boolean blocked = false;
 
-        Duration dt_article = Duration.ofSeconds(-1);
-        Duration dt_user = Duration.ofSeconds(-86401);
+        Duration dt_article = Duration.ofDays(-999999);
+        Duration dt_user = Duration.ofDays(-999999);
 
         if (first != null)
         {
@@ -141,41 +160,44 @@ main space for a given user (or for all users) and page metadata. A query limit 
                     dt_user = Duration.between(registrationdate, createdate);
             }
         }
-
+        
         out.println("<tr class=\"revision\">");
-        if (mode != NPPCheck.Mode.PATROLS)
+        if (mode.requiresDrafts())
         {
             String draft = entry.getTitle();
-            out.println("  <td class=\"title\">" + pageutils.generatePageLink(draft));
+            out.println("  <td class=\"title\">" + pageutils.generatePageLink(draft, (Boolean)draftinfo.get(i).get("exists")));
         }
 %>
-  <td class="title"><%= pageutils.generatePageLink(title, (Boolean)pageinfo[i].get("exists")) %>
-  <td><%= createdate %>
-  <td><%= patroldate %>
-  <td class="revsize"><%= dt_article.getSeconds() %>
+  <td class="title"><%= pageutils.generatePageLink(title, (Boolean)pageinfo.get(i).get("exists")) %>
+  <td class="date"><%= createdate %>
 <%
-    if (!username.isEmpty())
-    {
-        out.println("<td class=\"revsize\">" + dt_patrol.get(i).getSeconds());
-    }
+        if (mode.requiresReviews())
+        {
+            out.println("  <td class=\"date\">" + patroldate);
+            out.println("  <td class=\"revsize\">" + MathsAndStats.formatDuration(dt_article));
+            if (!username.isEmpty())
+                out.println("  <td class=\"revsize\">" + MathsAndStats.formatDuration(dt_patrol.get(i)));
+        }
 %>
   <td class="revsize"><%= size %>
-  <td><%= users.generateHTMLSummaryLinksShort(creatorname) %>
-  <td><%= registrationdate %>
+  <td class="user"><%= users.generateHTMLSummaryLinksShort(creatorname) %>
+  <td class="date"><%= registrationdate %>
   <td class="revsize"><%= editcount %>
-  <td class="revsize"><%= dt_user.getSeconds() / 86400 %>
+  <td class="revsize"><%= MathsAndStats.formatDuration(dt_user) %>
   <td class="boolean"><%= blocked %>
 <%
-        if (username.isEmpty())
+        if (mode.requiresReviews() && username.isEmpty())
         {
             String reviewer = entry.getUser();
-            out.println("  <td>" + users.generateHTMLSummaryLinksShort(reviewer));
+            out.println("  <td class=\"user\">" + users.generateHTMLSummaryLinksShort(reviewer));
+            out.println("  <td class=\"revsize\">" + reviewerdata.get(i).countEdits());
         }
+        out.println("  <td>" + snippets.get(i));
     }
     out.println("</table>");
 
     // output pagination
     out.println(ServletUtils.generatePagination(requesturl, offset, 50, logs.size()));
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 

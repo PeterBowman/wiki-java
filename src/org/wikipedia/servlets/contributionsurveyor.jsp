@@ -37,8 +37,8 @@
         users.add(user);
     else if (category != null)
     {
-        String[] catmembers = wiki.getCategoryMembers(category, Wiki.USER_NAMESPACE);
-        if (catmembers.length == 0)
+        List<String> catmembers = wiki.getCategoryMembers(category, Wiki.USER_NAMESPACE);
+        if (catmembers.isEmpty())
             request.setAttribute("error", "Category \"" + ServletUtils.sanitizeForHTML(category) + "\" contains no users!");
         else
             for (String tempstring : catmembers)
@@ -98,20 +98,22 @@
         }
     }
 %>
-<%@ include file="header.jsp" %>
+<%@ include file="header.jspf" %>
 <%  
     if (survey != null)
     {
         if (user != null)
         {
-            response.setHeader("Content-Disposition", "attachment; filename=" + URLEncoder.encode(user, "UTF-8") + ".txt");
+            response.setHeader("Content-Disposition", "attachment; filename=" 
+                + URLEncoder.encode(user, StandardCharsets.UTF_8) + ".txt");
             out.print(Users.generateWikitextSummaryLinks(user));            
         }
         else // category != null
-            response.setHeader("Content-Disposition", "attachment; filename=" + URLEncoder.encode(category, "UTF-8") + ".txt");
+            response.setHeader("Content-Disposition", "attachment; filename=" 
+                + URLEncoder.encode(category, StandardCharsets.UTF_8) + ".txt");
         out.println("* Survey URL: " + request.getRequestURL() + "?" + request.getQueryString());
         out.println();
-        out.print(survey);
+        out.println(survey);
         out.println(surveyor.generateWikitextFooter());
         return;
     }
@@ -129,11 +131,11 @@ and other venues. It isolates and ranks major edits by size. A query limit of
 <tr>
     <td><input type=radio name=mode id="radio_user" checked>
     <td>User to survey:
-    <td><input type=text name=user id=user value="<%= user == null ? "" : ServletUtils.sanitizeForAttribute(user) %>" required>
+    <td><input type=text name=user id=user value="<%= ServletUtils.sanitizeForAttribute(user) %>" required>
 <tr>
     <td><input type=radio name=mode id="radio_category">
     <td>Fetch users from category:
-    <td><input type=text name=category id=category value="<%= category == null ? "" : ServletUtils.sanitizeForAttribute(category) %>" disabled>
+    <td><input type=text name=category id=category value="<%= ServletUtils.sanitizeForAttribute(category) %>" disabled>
 <tr>
     <td colspan=2>Home wiki:
     <td><input type=text name="wiki" value="<%= homewiki %>" required>
@@ -151,4 +153,4 @@ and other venues. It isolates and ranks major edits by size. A query limit of
 </table>
 <input type=submit value="Survey user">
 </form>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>

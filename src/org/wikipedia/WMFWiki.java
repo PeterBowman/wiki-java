@@ -80,14 +80,14 @@ public class WMFWiki extends Wiki
      *  @return (see above)
      *  @throws IOException if a network error occurs
      */
-    public static WMFWiki[] getSiteMatrix() throws IOException
+    public static List<WMFWiki> getSiteMatrix() throws IOException
     {
         WMFWiki wiki = newSession("en.wikipedia.org");
         wiki.requiresExtension("SiteMatrix");
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "sitematrix");
         String line = wiki.makeApiCall(getparams, null, "WMFWiki.getSiteMatrix");
-        ArrayList<WMFWiki> wikis = new ArrayList<>(1000);
+        List<WMFWiki> wikis = new ArrayList<>(1000);
 
         // form: <special url="http://wikimania2007.wikimedia.org" code="wikimania2007" fishbowl="" />
         // <site url="http://ab.wiktionary.org" code="wiktionary" closed="" />
@@ -107,7 +107,7 @@ public class WMFWiki extends Wiki
         int size = wikis.size();
         Logger temp = Logger.getLogger("wiki");
         temp.log(Level.INFO, "WMFWiki.getSiteMatrix", "Successfully retrieved site matrix (" + size + " + wikis).");
-        return wikis.toArray(new WMFWiki[size]);
+        return wikis;
     }
     
     /**
@@ -116,10 +116,10 @@ public class WMFWiki extends Wiki
      *  <li>home - (String) a String identifying the home wiki (e.g. "enwiki" 
      *      for the English Wikipedia)
      *  <li>registration - (OffsetDateTime) when the single account login was created
-     *  <li>groups - (List&lt;String>) this user is a member of these global 
+     *  <li>groups - (List&lt;String&gt;) this user is a member of these global 
      *      groups
-     *  <li>rights - (List&lt;String) this user is explicitly granted the ability
-     *      to perform these actions globally
+     *  <li>rights - (List&lt;String&gt;) this user is explicitly granted the 
+     *      ability to perform these actions globally
      *  <li>locked - (Boolean) whether this user account has been locked
      *  <li>WIKI IDENTIFIER (e.g. "enwikisource" == "en.wikisource.org") - see below
      *  </ul>
@@ -128,7 +128,7 @@ public class WMFWiki extends Wiki
      *  For each wiki, a map is returned:
      *  <ul>
      *  <li>url - (String) the full URL of the wiki
-     *  <li>groups - (List&lt;String>) the local groups the user is in
+     *  <li>groups - (List&lt;String&gt;) the local groups the user is in
      *  <li>editcount - (Integer) the local edit count
      *  <li>blocked - (Boolean) whether the user is blocked. Adds keys "blockexpiry"
      *      (OffsetDateTime) and "blockreason" (String) with obvious values. If the
@@ -259,7 +259,7 @@ public class WMFWiki extends Wiki
      *  not installed
      *  @see <a href="https://mediawiki.org/wiki/Extension:GlobalUsage">Extension:GlobalUsage</a>
      */
-    public String[][] getGlobalUsage(String title) throws IOException
+    public List<String[]> getGlobalUsage(String title) throws IOException
     {
         requiresExtension("Global Usage");
     	if (namespace(title) != FILE_NAMESPACE)
@@ -278,7 +278,7 @@ public class WMFWiki extends Wiki
                 });
         });
 
-    	return usage.toArray(new String[0][0]);
+    	return usage;
     }
     
     /**
@@ -297,10 +297,10 @@ public class WMFWiki extends Wiki
         if (globalblacklist == null)
         {
             WMFWiki meta = newSession("meta.wikimedia.org");
-            globalblacklist = meta.getPageText("Spam blacklist");
+            globalblacklist = meta.getPageText(List.of("Spam blacklist")).get(0);
         }
         if (localblacklist == null)
-            localblacklist = getPageText("MediaWiki:Spam-blacklist");
+            localblacklist = getPageText(List.of("MediaWiki:Spam-blacklist")).get(0);
         
         // yes, I know about the spam whitelist, but I primarily intend to use
         // this to check entire domains whereas the spam whitelist tends to 

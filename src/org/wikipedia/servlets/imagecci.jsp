@@ -38,11 +38,12 @@
         }
     }
 %>
-<%@ include file="header.jsp" %>
+<%@ include file="header.jspf" %>
 <%
     if (survey != null)
     {
-        response.setHeader("Content-Disposition", "attachment; filename=" + URLEncoder.encode(user, "UTF-8") + ".txt");
+        response.setHeader("Content-Disposition", "attachment; filename=" 
+            + URLEncoder.encode(user, StandardCharsets.UTF_8) + ".txt");
         out.print(Users.generateWikitextSummaryLinks(user));
         out.println("* Survey URL: " + request.getRequestURL() + "?" + request.getQueryString());
         out.print(surveyor.formatImageSurveyAsWikitext(null, survey));
@@ -60,7 +61,7 @@ href="//en.wikipedia.org/wiki/WP:CCI">Contributor copyright investigations.</a>
 <table>
 <tr>
     <td>User to survey:
-    <td><input type=text name=user value="<%= user == null ? "" : ServletUtils.sanitizeForAttribute(user) %>" required>
+    <td><input type=text name=user value="<%= ServletUtils.sanitizeForAttribute(user) %>" required>
 <tr>
     <td>Home wiki:
     <td><input type=text name="wiki" value="<%= homewiki %>" required>
@@ -76,4 +77,4 @@ href="//en.wikipedia.org/wiki/WP:CCI">Contributor copyright investigations.</a>
     if (user != null && survey == null)
         request.setAttribute("error", "ERROR: User " + ServletUtils.sanitizeForHTML(user) + " does not exist!");
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>

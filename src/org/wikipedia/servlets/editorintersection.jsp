@@ -13,11 +13,7 @@
     request.setAttribute("scripts", new String[] { "common.js", "collapsible.js", "EditorIntersection.js" });
 
     String wikiparam = ServletUtils.sanitizeForAttributeOrDefault(request.getParameter("wiki"), "en.wikipedia.org");
-
-    String mode = request.getParameter("mode");
-    if (mode == null)
-        mode = "none";
-
+    String mode = Objects.requireNonNullElse(request.getParameter("mode"), "none");
     String pages = ServletUtils.sanitizeForHTML(request.getParameter("pages"));    
     String category = ServletUtils.sanitizeForAttribute(request.getParameter("category"));
     String user = ServletUtils.sanitizeForAttribute(request.getParameter("user"));
@@ -28,7 +24,7 @@
     boolean nominor = (request.getParameter("nominor") != null);
     boolean noreverts = (request.getParameter("noreverts") != null);
 %>
-<%@ include file="header.jsp" %>
+<%@ include file="header.jspf" %>
 
 <p>
 This tool retrieves the common editors of a given set of pages. Query limits of
@@ -75,7 +71,7 @@ first in the GUI) apply.
     if (request.getAttribute("error") != null)
     {
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
 
@@ -87,7 +83,7 @@ first in the GUI) apply.
     switch (mode)
     {
         case "category":
-            pagestream = Arrays.stream(wiki.getCategoryMembers(category));
+            pagestream = wiki.getCategoryMembers(category).stream();
             break;
         case "contribs":
             pagestream = wiki.contribs(user, null).stream().map(Wiki.Revision::getTitle);
@@ -98,7 +94,7 @@ first in the GUI) apply.
         default:
             // state with no input parameters       
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
         
@@ -110,7 +106,7 @@ first in the GUI) apply.
     {
         request.setAttribute("error", "Need at least two distinct pages to perform an intersection!");
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
     ArticleEditorIntersector aei = new ArticleEditorIntersector(wiki);
@@ -122,7 +118,7 @@ first in the GUI) apply.
     {
         request.setAttribute("error", "No intersection after applying exclusions and removing non-existing pages!");
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
 <%
     }
     Map<String, Map<String, List<Wiki.Revision>>> bypage = new HashMap<>();
@@ -171,4 +167,4 @@ first in the GUI) apply.
     out.println("<hr>");
     out.println(blah);
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>

@@ -13,7 +13,7 @@
     String wiki = ServletUtils.sanitizeForAttributeOrDefault(request.getParameter("wiki"), "en.wikipedia.org");
     String title = ServletUtils.sanitizeForAttribute(request.getParameter("title"));
 %>
-<%@ include file="header.jsp" %>
+<%@ include file="header.jspf" %>
 
 <p>
 This tool performs linksearches to count how many live links exist to each 
@@ -38,8 +38,8 @@ long-standing reference spam.
     {
         Wiki enWiki = Wiki.newSession(wiki);
         ExternalLinkPopularity elp = new ExternalLinkPopularity(enWiki);
-        elp.getExcludeList().addAll(Arrays.asList("wmflabs.org", "edwardbetts.com", "archive.org"));
-        Map<String, Map<String, List<String>>> results = elp.fetchExternalLinks(Arrays.asList(title));
+        elp.getExcludeList().addAll(List.of("wmflabs.org", "edwardbetts.com", "archive.org"));
+        Map<String, Map<String, List<String>>> results = elp.fetchExternalLinks(List.of(title));
         
         if (results.get(title).isEmpty())
             request.setAttribute("error", "No results found!");
@@ -51,4 +51,4 @@ long-standing reference spam.
         }
     }
 %>
-<%@ include file="footer.jsp" %>
+<%@ include file="footer.jspf" %>
