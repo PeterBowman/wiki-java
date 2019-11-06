@@ -23,6 +23,8 @@ package org.wikipedia;
 import java.util.*;
 import java.time.OffsetDateTime;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.*;
+import org.junit.jupiter.params.provider.CsvSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -40,6 +42,16 @@ public class WMFWikiTest
     {
         enWiki = WMFWiki.newSession("en.wikipedia.org");
         enWiki.setMaxLag(-1);
+    }
+    
+    @ParameterizedTest
+    @CsvSource({"enwiki, en.wikipedia.org",  "wikidatawiki, www.wikidata.org",
+            "zhwikiquote, zh.wikiquote.org", "commonswiki, commons.wikimedia.org",
+            "metawiki, meta.wikimedia.org"})
+    public void newSessionFromDBName(String dbname, String domain)
+    {
+        WMFWiki wiki = WMFWiki.newSessionFromDBName(dbname);
+        assertEquals(domain, wiki.getDomain());
     }
     
     @Test
@@ -175,5 +187,19 @@ public class WMFWikiTest
         // IP address (throws UnknownError)
         // guserinfo = WMFWiki.getGlobalUserInfo("127.0.0.1");
         // assertNull(guserinfo);
+    }
+    
+    @Test
+    public void getWikidataItems() throws Exception
+    {
+        List<String> input = List.of("Blah", "Albert Einstein", "Create a page", "Test", 
+            "Albert_Einstein", "User:MER-C");
+        List<String> actual = enWiki.getWikidataItems(input);
+        assertEquals("Q527633", actual.get(0));
+        assertEquals("Q937", actual.get(1));
+        assertNull(actual.get(2)); // local page doesn't exist
+        assertEquals("Q224615", actual.get(3));
+        assertEquals("Q937", actual.get(4));
+        assertNull(actual.get(5)); // local page exists, but no corresponding WD item
     }
 }

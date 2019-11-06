@@ -37,6 +37,18 @@ public class WMFWiki extends Wiki
     private static String globalblacklist;
     private String localblacklist;
     
+    // global wiki instances
+    private static WMFWiki meta, wikidata;
+    static
+    {
+        meta = newSession("meta.wikimedia.org");
+        meta.requiresExtension("SiteMatrix"); // getSiteMatrix
+        
+        wikidata = newSession("wikidata.org");
+        wikidata.requiresExtension("WikibaseRepository");
+        wikidata.setUsingCompressedRequests(false); // huh?
+    }
+    
     /**
      *  Denotes entries in the [[Special:Abuselog]]. These cannot be accessed
      *  through [[Special:Log]] or getLogEntries.
@@ -73,6 +85,43 @@ public class WMFWiki extends Wiki
         wiki.initVars();
         return wiki;
     }
+    
+    /**
+     *  Creates a new MediaWiki API client for the WMF wiki that has the given
+     *  database name (e.g. "enwiki" for the English Wikipedia, "nlwikisource" 
+     *  for the Dutch Wikisource and "wikidatawiki" for Wikidata).
+     *  @param dbname a WMF wiki DB name
+     *  @return the constructed API client object
+     *  @throws IllegalArgumentException if the DB name is not recognized
+     */
+    public static WMFWiki newSessionFromDBName(String dbname)
+    {
+        // special cases
+        switch (dbname)
+        {
+            case "commonswiki":  return newSession("commons.wikimedia.org");
+            case "metawiki":     return newSession("meta.wikimedia.org");
+            case "wikidatawiki": return newSession("www.wikidata.org");
+        }
+        
+        // wiktionary
+        int testindex = dbname.indexOf("wiktionary");
+        if (testindex > 0)
+            return newSession(dbname.substring(0, testindex) + ".wiktionary.org");
+        
+        testindex = dbname.indexOf("wiki");
+        if (testindex > 0)
+        {
+            String langcode = dbname.substring(0, testindex);
+            // most of these are Wikipedia
+            if (dbname.endsWith("wiki"))
+                return newSession(langcode + ".wikipedia.org");
+            // Wikibooks, Wikinews, Wikiquote, Wikisource, Wikiversity, Wikivoyage
+            return newSession(langcode + "." + dbname.substring(testindex) + ".org");
+        }
+        // Fishbowl/special wikis not implemented yet
+        throw new IllegalArgumentException("Unrecognized wiki: " + dbname);
+    }
 
     /**
      *  Returns the list of publicly readable and editable wikis operated by the
@@ -82,11 +131,9 @@ public class WMFWiki extends Wiki
      */
     public static List<WMFWiki> getSiteMatrix() throws IOException
     {
-        WMFWiki wiki = newSession("en.wikipedia.org");
-        wiki.requiresExtension("SiteMatrix");
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "sitematrix");
-        String line = wiki.makeApiCall(getparams, null, "WMFWiki.getSiteMatrix");
+        String line = meta.makeApiCall(getparams, null, "WMFWiki.getSiteMatrix");
         List<WMFWiki> wikis = new ArrayList<>(1000);
 
         // form: <special url="http://wikimania2007.wikimedia.org" code="wikimania2007" fishbowl="" />
@@ -295,10 +342,7 @@ public class WMFWiki extends Wiki
     {
         requiresExtension("SpamBlacklist");
         if (globalblacklist == null)
-        {
-            WMFWiki meta = newSession("meta.wikimedia.org");
             globalblacklist = meta.getPageText(List.of("Spam blacklist")).get(0);
-        }
         if (localblacklist == null)
             localblacklist = getPageText(List.of("MediaWiki:Spam-blacklist")).get(0);
         
@@ -468,6 +512,57 @@ public class WMFWiki extends Wiki
         List<String> ret = new ArrayList<>();
         for (List<String> item : temp)
             ret.add(item.get(0));
+        return ret;
+    }
+    
+    /**
+     *  Returns the Wikidata items corresponding to the given titles.
+     *  @param titles a list of page names
+     *  @return the corresponding Wikidata items, or null if either the Wikidata
+     *  item or the local article doesn't exist
+     *  @throws IOException if a network error occurs
+     */
+    public List<String> getWikidataItems(List<String> titles) throws IOException
+    {
+        String dbname = (String)getSiteInfo().get("dbname");
+        Map<String, String> getparams = new HashMap<>();
+        getparams.put("action", "wbgetentities");
+        getparams.put("sites", dbname);
+        
+        // WORKAROUND: this module doesn't accept mixed GET/POST requests
+        // often need to slice up titles into smaller chunks than slowmax (here 25)
+        // FIXME: replace with constructTitleString when Wikidata is behaving correctly
+        TreeSet<String> ts = new TreeSet<>();
+        for (String title : titles)
+            ts.add(normalize(title));
+        List<String> titles_enc = new ArrayList<>(ts);
+        ArrayList<String> titles_chunked = new ArrayList<>();
+        for (int i = 0; i < titles_enc.size() / 25 + 1; i++)
+        {
+            titles_chunked.add(String.join("|", 
+                titles_enc.subList(i * 25, Math.min(titles_enc.size(), (i + 1) * 25))));     
+        }
+        
+        Map<String, String> results = new HashMap<>();
+        for (String chunk : titles_chunked)
+        {
+            getparams.put("titles", chunk);
+            String line = wikidata.makeApiCall(getparams, null, "getWikidataItem");
+            String[] entities = line.split("<entity ");
+            for (int i = 1; i < entities.length; i++)
+            {
+                if (entities[i].contains("missing=\"\""))
+                    continue;
+                String wdtitle = parseAttribute(entities[i], " id", 0);
+                int index = entities[i].indexOf("\"" + dbname + "\"");
+                String localtitle = parseAttribute(entities[i], "title", index);
+                results.put(localtitle, wdtitle);
+            }
+        }
+        // reorder
+        List<String> ret = new ArrayList<>();
+        for (String title : titles)
+            ret.add(results.get(normalize(title)));
         return ret;
     }
 }

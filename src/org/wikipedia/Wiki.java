@@ -28,6 +28,7 @@ import java.nio.file.*;
 import java.text.Normalizer;
 import java.time.*;
 import java.time.format.*;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.*;
@@ -50,10 +51,29 @@ import javax.security.auth.login.*;
  *  <a href="https://github.com/MER-C/wiki-java/wiki/Extended-documentation">here</a>.
  *  All wikilinks are relative to the English Wikipedia and all timestamps are in
  *  your wiki's time zone.
- *  </p>
+ *  <p>
  *  Please file bug reports <a href="https://en.wikipedia.org/wiki/User_talk:MER-C">here</a>
  *  or at the <a href="https://github.com/MER-C/wiki-java/issues">Github issue
  *  tracker</a>.
+ * 
+ *  <h3>Configuration variables</h3>
+ *  <p>
+ *  Some configuration is available through <code>java.util.Properties</code>. 
+ *  Set the system property <code>wiki-java.properties</code> to a file path
+ *  where a configuration file is located. The available variables are:
+ *  <ul>
+ *  <li><b>maxretries</b>: (default 2) the number of attempts to retry a network 
+ *      request before stopping
+ *  <li><b>connecttimeout</b>: (default 30000) maximum allowed time for a HTTP(s)
+ *      connection to be established in milliseconds
+ *  <li><b>readtimeout</b>: (default 180000) maximum allowed time for the read 
+ *      to take place in milliseconds (needs to be longer, some connections are 
+ *      slow and the data volume is large!). 
+ *  <li><b>loguploadsize</b>: (default 22, equivalent to 2^22 = 4 MB) controls 
+ *      the log2(size) of each chunk in chunked uploads. Disable chunked uploads 
+ *      by setting a large value here (50, equivalent to 2^50 = 1 PB will do).
+ *      Stuff you actually upload must be no larger than 4 GB.
+ * .</ul>
  *
  *  @author MER-C and contributors
  *  @version 0.36
@@ -396,7 +416,7 @@ public class Wiki implements Comparable<Wiki>
      *  resolution} and {@linkplain #setAssertionMode(int) user and bot assertions}
      *  when wanted by default. Add stuff to this map if you want to add parameters
      *  to every API call.
-     *  @see #makeApiCall(Map, Map, String)
+     *  @see #CCall(Map, Map, String)
      */
     protected ConcurrentHashMap<String, String> defaultApiParams;
 
@@ -413,6 +433,7 @@ public class Wiki implements Comparable<Wiki>
     // wiki properties
     private boolean siteinfofetched = false;
     private boolean wgCapitalLinks = true;
+    private String dbname;
     private String mwVersion;
     private ZoneId timezone = ZoneOffset.UTC;
     private Locale locale = Locale.ENGLISH;
@@ -446,18 +467,10 @@ public class Wiki implements Comparable<Wiki>
     // Store time when the last throttled action was executed
     private long lastThrottleActionTime = 0;
 
-    // retry count
-    private final int maxtries = 2;
-
-    // time to open a connection
-    private static final int CONNECTION_CONNECT_TIMEOUT_MSEC = 30000; // 30 seconds
-    // time for the read to take place. (needs to be longer, some connections are slow
-    // and the data volume is large!)
-    private static final int CONNECTION_READ_TIMEOUT_MSEC = 180000; // 180 seconds
-    // log2(upload chunk size). Default = 22 => upload size = 4 MB. Disable
-    // chunked uploads by setting a large value here (50 = 1 PB will do).
-    // Stuff you actually upload must be no larger than 2 GB.
-    private static final int LOG2_CHUNK_SIZE = 22;
+    // config via properties
+    private final int maxtries;
+    private final int connect_timeout_msec, read_timeout_msec;
+    private final int log2_upload_size;
 
     // CONSTRUCTORS AND CONFIGURATION
 
@@ -485,6 +498,26 @@ public class Wiki implements Comparable<Wiki>
         logger.setLevel(loglevel);
         logger.log(Level.CONFIG, "[{0}] Using Wiki.java {1}", new Object[] { domain, version });
         cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        
+        // read in config
+        Properties props = new Properties();
+        String filename = System.getProperty("wiki-java.properties");
+        if (filename != null)
+        {
+            try
+            {
+                InputStream in = new FileInputStream(new File(filename));
+                props.load(in);
+            }
+            catch (IOException ex)
+            {
+                logger.log(Level.WARNING, "Unable to load properties file " + filename);
+            }
+        }
+        maxtries = Integer.parseInt(props.getProperty("maxretries", "2"));
+        log2_upload_size = Integer.parseInt(props.getProperty("loguploadsize", "22")); // 4 MB
+        connect_timeout_msec = Integer.parseInt(props.getProperty("connecttimeout", "30000")); // 30 seconds
+        read_timeout_msec = Integer.parseInt(props.getProperty("readtimeout", "180000")); // 180 seconds
     }
 
     /**
@@ -692,6 +725,7 @@ public class Wiki implements Comparable<Wiki>
      *  <li><b>version</b>: (String) the MediaWiki version used for this wiki
      *  <li><b>timezone</b>: (ZoneId) the timezone the wiki is in, default = UTC
      *  <li><b>locale</b>: (Locale) the locale of the wiki
+     *  <li><b>dbname</b>: (String) the internal name of the database
      *  </ul>
      *
      *  @return (see above)
@@ -719,6 +753,7 @@ public class Wiki implements Comparable<Wiki>
             timezone = ZoneId.of(parseAttribute(bits, "timezone", 0));
             mwVersion = parseAttribute(bits, "generator", 0);
             locale = new Locale(parseAttribute(bits, "lang", 0));
+            dbname = parseAttribute(bits, "wikiid", 0);
 
             // parse extensions
             bits = line.substring(line.indexOf("<extensions>"), line.indexOf("</extensions>"));
@@ -763,6 +798,7 @@ public class Wiki implements Comparable<Wiki>
         siteinfo.put("version", mwVersion);
         siteinfo.put("locale", locale);
         siteinfo.put("extensions", extensions);
+        siteinfo.put("dbname", dbname);
         return siteinfo;
     }
 
@@ -3952,7 +3988,7 @@ public class Wiki implements Comparable<Wiki>
     /**
      *  Gets the file metadata for a file. The keys are:
      *
-     *  * size (file size, Integer)
+     *  * size (file size in bytes, Long)
      *  * width (Integer)
      *  * height (Integer)
      *  * sha1 (String)
@@ -3966,37 +4002,79 @@ public class Wiki implements Comparable<Wiki>
      */
     public Map<String, Object> getFileMetadata(String file) throws IOException
     {
-        // This seems a good candidate for bulk queries.
+        return getFileMetadata(List.of(file)).get(0);
+    }
+    
+    /**
+     *  Gets the file metadata for a list of files. Returns a result regardless
+     *  of whether a file is hosted locally or a shared repository (e.g. 
+     *  Wikimedia Commons). The keys are:
+     *
+     *  * size (file size in bytes, Long)
+     *  * width (Integer)
+     *  * height (Integer)
+     *  * sha1 (String)
+     *  * mime (MIME type, String)
+     *  * plus EXIF metadata (Strings)
+     *
+     *  @param files the files to get metadata for (may contain "File")
+     *  @return the metadata for each file in order, or null if the corresponding
+     *  image doesn't exist
+     *  @throws IOException or UncheckedIOException if a network error occurs
+     *  @since 0.37
+     */
+    public List<Map<String, Object>> getFileMetadata(List<String> files) throws IOException
+    {
         // Support for videos is blocked on https://phabricator.wikimedia.org/T89971
         Map<String, String> getparams = new HashMap<>();
+        Map<String, Object> postparams = new HashMap<>();
         getparams.put("action", "query");
         getparams.put("prop", "imageinfo");
         getparams.put("iiprop", "size|sha1|mime|metadata");
-        getparams.put("titles", removeNamespace(normalize(file)));
-        String line = makeApiCall(getparams, null, "getFileMetadata");
-        if (line.contains("missing=\"\""))
-            return null;
-        Map<String, Object> metadata = new HashMap<>(30);
-
-        // size, width, height, sha, mime type
-        metadata.put("size", Integer.valueOf(parseAttribute(line, "size", 0)));
-        metadata.put("width", Integer.valueOf(parseAttribute(line, "width", 0)));
-        metadata.put("height", Integer.valueOf(parseAttribute(line, "height", 0)));
-        metadata.put("sha1", parseAttribute(line, "sha1", 0));
-        metadata.put("mime", parseAttribute(line, "mime", 0));
-
-        // exif
-        while (line.contains("metadata name=\""))
+        
+        Map<String, Map<String, Object>> intermediate = new HashMap<>();
+        for (String chunk : constructTitleString(files))
         {
-            // TODO: remove this
-            int a = line.indexOf("name=\"") + 6;
-            int b = line.indexOf('\"', a);
-            String name = parseAttribute(line, "name", 0);
-            String value = parseAttribute(line, "value", 0);
-            metadata.put(name, value);
-            line = line.substring(b);
+            postparams.put("titles", chunk);            
+            String line = makeApiCall(getparams, postparams, "getFileMetadata");
+            String[] results = line.split("<page ");
+            for (int i = 1; i < results.length; i++) // 1 = skipping front crud
+            {
+                String result = results[i];
+                // missing image - missing attribute means no local file page.
+                // Query returns results from repositories (e.g. Wikimedia Commons)
+                if (!result.contains("<ii ")) 
+                    continue;
+                String parsedtitle = parseAttribute(result, "title", 0);
+                Map<String, Object> metadata = new HashMap<>(30);
+
+                // size, width, height, sha, mime type
+                metadata.put("size", Long.valueOf(parseAttribute(result, "size", 0)));
+                metadata.put("width", Integer.valueOf(parseAttribute(result, "width", 0)));
+                metadata.put("height", Integer.valueOf(parseAttribute(result, "height", 0)));
+                metadata.put("sha1", parseAttribute(result, "sha1", 0));
+                metadata.put("mime", parseAttribute(result, "mime", 0));
+
+                // exif
+                for (int j = result.indexOf("<metadata "); j > 0; j = result.indexOf("<metadata ", ++j))
+                {
+                    // FIXME: discards nesting in metadata
+                    String name = parseAttribute(result, "name", j);
+                    // for SVGs, metadata contains "width" and "height". Ignore these.
+                    if (name.equals("width") || name.equals("height"))
+                        continue;
+                    String value = parseAttribute(result, "value", j);
+                    metadata.put(name, value);
+                }
+                intermediate.put(parsedtitle, metadata);
+            }
         }
-        return metadata;
+        
+        // reorder results
+        List<Map<String, Object>> ret = new ArrayList<>();
+        for (String localtitle : files)
+            ret.add(intermediate.get(normalize(localtitle)));
+        return ret;
     }
 
     /**
@@ -4224,7 +4302,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("action", "upload");
         // chunked upload setup
         long filesize = file.length();
-        long chunks = (filesize >> LOG2_CHUNK_SIZE) + 1;
+        long chunks = (filesize >> log2_upload_size) + 1;
         String filekey = "";
         try (FileInputStream fi = new FileInputStream(file))
         {
@@ -4248,7 +4326,7 @@ public class Wiki implements Comparable<Wiki>
                 }
                 else
                 {
-                    long offset = i << LOG2_CHUNK_SIZE;
+                    long offset = i << log2_upload_size;
                     postparams.put("stash", "1");
                     postparams.put("offset", offset);
                     postparams.put("filesize", filesize);
@@ -4256,7 +4334,7 @@ public class Wiki implements Comparable<Wiki>
                         postparams.put("filekey", filekey);
 
                     // write the actual file
-                    long buffersize = Math.min(1 << LOG2_CHUNK_SIZE, filesize - offset);
+                    long buffersize = Math.min(1 << log2_upload_size, filesize - offset);
                     byte[] by = new byte[(int)buffersize]; // 32 bit problem. Why must array indices be ints?
                     fi.read(by);
                     postparams.put("chunk\"; filename=\"" + file.getName(), by);
@@ -5339,7 +5417,7 @@ public class Wiki implements Comparable<Wiki>
         });
 
         int size = pages.size();
-        log(Level.INFO, "imageUsage", "Successfully retrieved usages of File:" + image + " (" + size + " items)");
+        log(Level.INFO, "imageUsage", "Successfully retrieved usages of " + image + " (" + size + " items)");
         return pages;
     }
 
@@ -8200,8 +8278,10 @@ public class Wiki implements Comparable<Wiki>
         else if (param instanceof OffsetDateTime)
         {
             OffsetDateTime date = (OffsetDateTime)param;
-            // https://phabricator.wikimedia.org/T16449
-            return date.atZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            // https://www.mediawiki.org/wiki/Timestamp
+            return date.atZoneSameInstant(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.MICROS)
+                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
         }
         else if (param instanceof Collection)
         {
@@ -8255,8 +8335,8 @@ public class Wiki implements Comparable<Wiki>
     protected URLConnection makeConnection(String url) throws IOException
     {
         URLConnection u = new URL(url).openConnection();
-        u.setConnectTimeout(CONNECTION_CONNECT_TIMEOUT_MSEC);
-        u.setReadTimeout(CONNECTION_READ_TIMEOUT_MSEC);
+        u.setConnectTimeout(connect_timeout_msec);
+        u.setReadTimeout(read_timeout_msec);
         if (zipped)
             u.setRequestProperty("Accept-encoding", "gzip");
         u.setRequestProperty("User-Agent", useragent);

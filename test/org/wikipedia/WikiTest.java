@@ -29,6 +29,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.*;
+import org.junit.jupiter.params.provider.CsvSource;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -210,17 +212,19 @@ public class WikiTest
         assertEquals(530, enWiki.getPageHistory("Main Page", null).size(), "after listPages override");
     }
 
-    @Test
-    public void getTalkPage() throws Exception
+    @ParameterizedTest
+    @CsvSource({
+        "Hello, Talk:Hello",
+        "User:Hello, User talk:Hello",
+        "Talk:Hello, EXCEPTION",       // talk page of a talk page
+        "Special:Newpages, EXCEPTION", // special pages don't have talk pages
+        "Media:Wiki.png, EXCEPTION"})  // media pages don't have talk pages    
+    public void getTalkPage(String page, String talkpage) throws Exception
     {
-        assertEquals("Talk:Hello", enWiki.getTalkPage("Hello"));
-        assertEquals("User talk:Hello", enWiki.getTalkPage("User:Hello"));
-        assertThrows(IllegalArgumentException.class, () -> enWiki.getTalkPage("Talk:Hello"),
-            "tried to get talk page of a talk page");
-        assertThrows(IllegalArgumentException.class, () -> enWiki.getTalkPage("Special:Newpages"),
-            "tried to get talk page of a special page");
-        assertThrows(IllegalArgumentException.class, () -> enWiki.getTalkPage("Media:Wiki.png"),
-            "tried to get talk page of a media page");
+        if (talkpage.equals("EXCEPTION"))
+            assertThrows(IllegalArgumentException.class, () -> enWiki.getTalkPage(page));
+        else
+            assertEquals(talkpage, enWiki.getTalkPage(page));
     }
 
     @Test
@@ -671,9 +675,49 @@ public class WikiTest
     @Test
     public void getFileMetadata() throws Exception
     {
-        assertNull(enWiki.getFileMetadata("File:Lweo&pafd.blah"), "non-existent file");
-        assertNull(enWiki.getFileMetadata("File:WikipediaSignpostIcon.svg"), "commons file");
-
+        List<Map<String, Object>> results = enWiki.getFileMetadata(List.of(
+            "File:Tianasquare.jpg", "File:Lweo&pafd.blah", "File:Phra Phuttha Chinnarat (II).jpg", 
+            "File:WikipediaSignpostIcon.svg", "File:Mandelbrotzoom 20191023.webm"));
+        
+        // https://en.wikipedia.org/wiki/File:Tianasquare.jpg
+        Map<String, Object> tankman = results.get(0);
+        assertEquals("image/jpeg", tankman.get("mime"));
+        assertEquals(330, tankman.get("width"));
+        assertEquals(218, tankman.get("height"));
+        assertEquals(48481L, tankman.get("size"));
+        
+        assertNull(results.get(1), "non-existent file");
+        
+        // Commons files return results
+        // https://en.wikipedia.org/wiki/File:Phra_Phuttha_Chinnarat_(II).jpg   
+        Map<String, Object> wat = results.get(2);
+        assertEquals("image/jpeg", wat.get("mime"));
+        assertEquals(5395, wat.get("width"));
+        assertEquals(3596, wat.get("height"));
+        assertEquals(19125101L, wat.get("size"));
+        
+        // EXIF or other metadata parsing (subset)
+        assertEquals("Canon", wat.get("Make"));
+        assertEquals("Canon EOS 5D Mark II", wat.get("Model"));
+        assertEquals("70/1", wat.get("FocalLength"));
+        assertEquals("1/80", wat.get("ExposureTime"));
+        assertEquals("4/1", wat.get("FNumber"));
+        assertEquals("250", wat.get("ISOSpeedRatings"));
+        
+        // slightly exotic file type: SVG
+        // https://en.wikipedia.org/wiki/File:WikipediaSignpostIcon.svg
+        Map<String, Object> signpost = results.get(3);
+        assertEquals("image/svg+xml", signpost.get("mime"));
+        assertEquals(46, signpost.get("width"));
+        assertEquals(55, signpost.get("height"));
+        assertEquals(3117L, signpost.get("size"));
+        
+        // large file that busts Java integer size
+        // https://en.wikipedia.org/wiki/File:Mandelbrotzoom_20191023.webm
+        Map<String, Object> fractal = results.get(4);
+        assertEquals("video/webm", fractal.get("mime"));
+        assertEquals(2703768090L, fractal.get("size"));
+        
         // further tests blocked on MediaWiki API rewrite
         // see https://phabricator.wikimedia.org/T89971
     }
@@ -687,14 +731,14 @@ public class WikiTest
     @Test
     public void getInterWikiLinks() throws Exception
     {
-        List<String> inputs = List.of("Test", "Gkdfkkl&djfdf", "Blah", "Test", "Albert Einstein");        
+        List<String> inputs = List.of("Test", "Gkdfkkl&djfdf", "Perth (disambiguation)", "Test", "Albert Einstein");        
         var result = enWiki.getInterWikiLinks(inputs);
         
         assertTrue(result.get(1).isEmpty(), "non-existing page");
         assertEquals(result.get(0), result.get(3), "check duplicate removal");
         // quick functionality verification
         assertEquals(result.get(0).get("ja"), "テスト");
-        assertEquals(result.get(2).get("tr"), "Bla Bla Bla");
+        assertEquals(result.get(2).get("pl"), "Perth (ujednoznacznienie)");
         assertEquals(result.get(4).get("zh"), "阿尔伯特·爱因斯坦");
     }
 
