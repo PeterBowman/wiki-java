@@ -27,6 +27,7 @@ import java.security.MessageDigest;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import javax.security.auth.login.FailedLoginException;
 
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.*;
@@ -102,6 +103,13 @@ public class WikiTest
         Wiki dummy = Wiki.newSession("en.wikipedia.org", "/example", "https://");
         int result_5 = enWiki.compareTo(dummy);
         assertTrue(result_5 > 0, "multiple instances on same domain");
+    }
+    
+    @Test
+    public void login() throws Exception
+    {
+        assertThrows(FailedLoginException.class, () -> 
+            enWiki.login("MER-C@Fake", "ObviouslyWrongPassword"), "Failed login must throw exception.");
     }
 
     @Test
@@ -298,6 +306,7 @@ public class WikiTest
         // https://test.wikipedia.org/wiki/User:MER-C/UnitTests/Delete
         Wiki.Revision first = testWiki.getFirstRevision("User:MER-C/UnitTests/Delete");
         assertEquals(217080L, first.getID());
+        assertEquals(List.of("HotCat", "MyStupidTestTag"), first.getTags());
     }
 
     @Test
@@ -587,11 +596,11 @@ public class WikiTest
         assertEquals("User:Nimimaan", le.get(0).getTitle());
         assertEquals("spambot", le.get(0).getComment());
         assertEquals("spambot", le.get(0).getParsedComment());
-//        assertEquals(new Object[] {
-//            false, true, // hard block (not anon only), account creation disabled,
-//            false, true, // autoblock enabled, email disabled
-//            true, "indefinite" // talk page access revoked, expiry
-//        }, le[0].getDetails(), "block log parameters");
+        Map<String, String> details = le.get(0).getDetails();
+        assertTrue(details.containsKey("nocreate"));
+        assertTrue(details.containsKey("noemail"));
+        assertTrue(details.containsKey("nousertalk"));
+        assertEquals("indefinite", details.get("expiry"));
 
         // New user log
         assertEquals("Nimimaan", le.get(1).getUser());
@@ -599,7 +608,7 @@ public class WikiTest
         assertEquals("create", le.get(1).getAction());
         assertEquals("", le.get(1).getComment());
         assertEquals("", le.get(1).getParsedComment());
-//        assertNull(le.get(1).getDetails(), "new user log parameters");
+        assertTrue(le.get(1).getDetails().isEmpty());
 
         // https://en.wikipedia.org/w/api.php?action=query&list=logevents&letitle=Talk:96th%20Test%20Wing/Temp
 
@@ -610,7 +619,15 @@ public class WikiTest
         le = enWiki.getLogEntries(Wiki.ALL_LOGS, null, rh);
         assertEquals(Wiki.MOVE_LOG, le.get(0).getType());
         assertEquals("move", le.get(0).getAction());
-        // TODO: test for new title, redirect suppression
+        assertEquals("96th Test Wing", le.get(0).getDetails().get("target_title"));
+        // TODO: test for redirect suppression - on hold pending https://phabricator.wikimedia.org/T152346
+        
+        // protection log
+        rh = enWiki.new RequestHelper()
+            .byTitle("Wikipedia:Contact us - Licensing");
+        le = enWiki.getLogEntries(Wiki.PROTECTION_LOG, null, rh);
+        assertEquals("protect", le.get(0).getAction());
+        assertEquals("‎[edit=sysop] (indefinite) ‎[move=sysop] (indefinite)", le.get(0).getDetails().get("protection string"));
 
         // RevisionDeleted log entries, no access
         // https://test.wikipedia.org/w/api.php?action=query&list=logevents&letitle=User%3AMER-C%2FTest
@@ -621,6 +638,8 @@ public class WikiTest
         assertTrue(le.get(0).isCommentDeleted(), "reason hidden");
         assertNull(le.get(0).getUser(), "user hidden");
         assertTrue(le.get(0).isUserDeleted(), "user hidden");
+        // tags (not related to the LogEntry being RevisionDeleted)
+        assertEquals(List.of("HotCat", "MyStupidTestTag"), le.get(0).getTags());
         // https://test.wikipedia.org/w/api.php?action=query&list=logevents&leuser=MER-C
         //     &lestart=20161002050030&leend=20161002050000&letype=delete
         rh = testWiki.new RequestHelper()
@@ -929,6 +948,11 @@ public class WikiTest
         assertFalse(rev.isCommentDeleted());
         assertFalse(rev.isContentDeleted());
         assertFalse(rev.isPageDeleted());
+        assertTrue(rev.getTags().isEmpty());
+        
+        // tags
+        rev = enWiki.getRevision(925243214L);
+        assertEquals(List.of("huggle", "mw-rollback"), rev.getTags());
 
         // revdel, logged out
         // https://en.wikipedia.org/w/index.php?title=Imran_Khan_%28singer%29&oldid=596714684
@@ -991,21 +1015,35 @@ public class WikiTest
         // bad revids
         assertNull(enWiki.diff(Map.of("revid", 1L << 62), Map.of("revid", 803731343L)), "bad from revid");
         assertNull(enWiki.diff(Map.of("revid", 803731343L), Map.of("revid", 1L << 62)), "bad to revid");
+        
+        // new article
+        diff = enWiki.diff(Map.of("revid", 154400451L), Map.of("revid", Wiki.PREVIOUS_REVISION));
+        assertTrue(diff.contains("'''Urmitz''' is a municipality in the [[Mayen-Koblenz|district of Mayen-Koblenz]] "
+            + "in [[Rhineland-Palatinate]], western [[Germany]]"));
     }
 
     @Test
     public void contribs() throws Exception
     {
         List<String> users = List.of(
+            "Frank234234",
             "Dsdlgfkjsdlkfdjilgsujilvjcl", // should not exist
             "0.0.0.0", // IP address
             "Allancake" // revision deleted
         );
         List<List<Wiki.Revision>> edits = enWiki.contribs(users, null, null);
 
-        assertTrue(edits.get(0).isEmpty(), "non-existent user");
-        assertTrue(edits.get(1).isEmpty(), "IP address with no edits");
-        for (Wiki.Revision rev : edits.get(2))
+        // functionality test
+        // https://en.wikipedia.org/wiki/Special:Contributions/Frank234234
+        List<Wiki.Revision> contribs = edits.get(0);
+        assertEquals(921259981L, contribs.get(0).getID());
+        assertEquals(918474023L, contribs.get(1).getID());
+        assertEquals(List.of("visualeditor"), contribs.get(0).getTags());
+        
+        // edge cases
+        assertTrue(edits.get(1).isEmpty(), "non-existent user");
+        assertTrue(edits.get(2).isEmpty(), "IP address with no edits");
+        for (Wiki.Revision rev : edits.get(3))
         {
             if (rev.getID() == 724989913L)
             {
