@@ -52,9 +52,11 @@ public class WMFWiki extends Wiki
     static
     {
         METAWIKI = newSession("meta.wikimedia.org");
+        METAWIKI.setMaxLag(-1);;
         METAWIKI.requiresExtension("SiteMatrix"); // getSiteMatrix
         
         WIKIDATA = newSession("wikidata.org");
+        WIKIDATA.setMaxLag(-1);
         WIKIDATA.requiresExtension("WikibaseRepository");
         WIKIDATA.setUsingCompressedRequests(false); // huh?
     }
