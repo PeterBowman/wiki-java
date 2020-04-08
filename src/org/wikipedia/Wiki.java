@@ -8236,7 +8236,7 @@ public class Wiki implements Comparable<Wiki>
 
                 // Parse cookies from response and store for later. Header fields
                 // are case-insensitive and MW may serve cookies split into both
-                // 'set-cookie' and 'Set-Cookie' headers (see T249526).
+                // 'set-cookie' and 'Set-Cookie' headers (see T249680).
                 Map<String, List<String>> headerFields = connection.getHeaderFields();
                 headerFields.entrySet().stream()
                     .filter(e -> "set-cookie".equalsIgnoreCase(e.getKey())) // key can be null
