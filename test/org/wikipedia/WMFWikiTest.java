@@ -170,11 +170,11 @@ public class WMFWikiTest
         assertEquals("Abusing [[WP:Sock puppetry|multiple accounts]]: Please see: "
             + "[[w:en:Wikipedia:Sockpuppet investigations/Japanelemu]]", luserinfo.get("blockreason"));
         
-        // eswiki
-        luserinfo = (Map)guserinfo.get("eswiki");
-        assertEquals("https://es.wikipedia.org", luserinfo.get("url"));
-        assertEquals(15, luserinfo.get("editcount"));
-        assertEquals(OffsetDateTime.parse("2017-05-31T13:45:00Z"), luserinfo.get("registration"));
+        // meta
+        luserinfo = (Map)guserinfo.get("metawiki");
+        assertEquals("https://meta.wikimedia.org", luserinfo.get("url"));
+        assertEquals(0, luserinfo.get("editcount"));
+        assertEquals(OffsetDateTime.parse("2016-09-21T13:59:37Z"), luserinfo.get("registration"));
         assertEquals(Collections.emptyList(), luserinfo.get("groups"));
         assertFalse((Boolean)luserinfo.get("blocked"));
         assertNull(luserinfo.get("blockexpiry"));
@@ -204,5 +204,12 @@ public class WMFWikiTest
         assertEquals("Q224615", actual.get(3));
         assertEquals("Q937", actual.get(4));
         assertNull(actual.get(5)); // local page exists, but no corresponding WD item
+    }
+    
+    @Test
+    public void triageNewPage() throws Exception
+    {
+        assertThrows(SecurityException.class, 
+            () -> enWiki.triageNewPage(64721139L, "Testing (should fail)", true, true));
     }
 }

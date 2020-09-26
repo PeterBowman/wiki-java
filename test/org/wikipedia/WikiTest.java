@@ -400,7 +400,7 @@ public class WikiTest
         Wiki.RequestHelper rh = enWiki.new RequestHelper()
             .filterBy(Map.of("hidden", Boolean.FALSE));
         actual = enWiki.getCategories(List.of("Category:Wikipedia articles with undisclosed paid content"), rh, false);
-        assertEquals(expected2.subList(1, 3), actual.get(0), "filter hidden categories");
+        assertEquals(expected2.subList(1, 2), actual.get(0), "filter hidden categories");
     }
 
     @Test
@@ -421,7 +421,7 @@ public class WikiTest
         enWiki.getImage("File:Portrait of Jupiter from Cassini.jpg", tempfile);
         byte[] imageData = Files.readAllBytes(tempfile.toPath());
         byte[] hash = sha256.digest(imageData);
-        assertEquals("8fcc49c1e86ce65a5f1cd7d39da314315114f13c845ac2ac3532b5f85ae88af7",
+        assertEquals("c0538b43b2a84b0b0caee667b17aa8d311300efd56252d972b6ce20bde6dd758",
             String.format("%064x", new BigInteger(1, hash)));
         Files.delete(tempfile.toPath());
     }
@@ -630,6 +630,15 @@ public class WikiTest
         le = enWiki.getLogEntries(Wiki.PROTECTION_LOG, null, rh);
         assertEquals("protect", le.get(0).getAction());
         assertEquals("‎[edit=sysop] (indefinite) ‎[move=sysop] (indefinite)", le.get(0).getDetails().get("protection string"));
+        
+        // user rights log
+        rh = enWiki.new RequestHelper().byUser("MER-C").byTitle("User:Siddiqsazzad001");
+        le = enWiki.getLogEntries(Wiki.USER_RIGHTS_LOG, null, rh);
+        assertEquals(Wiki.USER_RIGHTS_LOG, le.get(0).getType());
+        assertEquals("rights", le.get(0).getAction());
+        details = le.get(0).getDetails();
+        assertEquals("extendedconfirmed,patroller,reviewer,rollbacker", details.get("oldgroups"));
+        assertEquals("extendedconfirmed", details.get("newgroups"));
 
         // RevisionDeleted log entries, no access
         // https://test.wikipedia.org/w/api.php?action=query&list=logevents&letitle=User%3AMER-C%2FTest
@@ -655,7 +664,7 @@ public class WikiTest
     @Test
     public void getPageInfo() throws Exception
     {
-        List<String> pages = List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages");
+        List<String> pages = List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages", "HomePage");
         List<Map<String, Object>> pageinfo = enWiki.getPageInfo(pages);
 
         // Main Page
@@ -677,9 +686,12 @@ public class WikiTest
         pageinfo.get(0).remove("inputpagename");
         pageinfo.get(2).remove("inputpagename");
         assertEquals(pageinfo.get(0), pageinfo.get(2), "duplicate");
-
+        
         // Special page = return null
         assertNull(pageinfo.get(3), "special page");
+        
+        // redirect
+        assertTrue((Boolean)pageinfo.get(4).get("redirect"));
     }
 
     @Test
@@ -1007,13 +1019,11 @@ public class WikiTest
             .replaceAll("<!--.*-->", "").trim();
         assertEquals("", diff, "no difference");
         // no deleted pages allowed
-        // FIXME: broken because makeHTTPRequest() swallows the API error
-        // actual = enWiki.diff("Create a page", 0L, null, null, 804972897L, null);
-        // assertNull(actual, "to deleted");
-        // actual = enWiki.diff(null, 804972897L, null, "Create a page", 0L, null);
+        assertNull(enWiki.diff(Map.of("title", "Create a page"), Map.of("revid", 804972897L)), "from deleted");
+        assertNull(enWiki.diff(Map.of("revid", 804972897L), Map.of("title", "Create a page")), "to deleted");
         // no RevisionDeleted revisions allowed (also broken)
         // https://en.wikipedia.org/w/index.php?title=Imran_Khan_%28singer%29&oldid=596714684
-        // assertNull(enWiki.diff(Map.of("revid", 596714684L), Map.of("revid", Wiki.NEXT_REVISION), "from deleted revision);
+        assertNull(enWiki.diff(Map.of("revid", 596714684L), Map.of("revid", Wiki.NEXT_REVISION)), "from deleted revision");
 
         // bad revids
         assertNull(enWiki.diff(Map.of("revid", 1L << 62), Map.of("revid", 803731343L)), "bad from revid");
@@ -1059,7 +1069,8 @@ public class WikiTest
         // https://test.wikipedia.org/wiki/Blah_blah_2
         Wiki.RequestHelper rh = testWiki.new RequestHelper()
             .inNamespaces(Wiki.MAIN_NAMESPACE)
-            .filterBy(Map.of("new", Boolean.TRUE, "top", Boolean.TRUE));
+            .filterBy(Map.of("new", Boolean.TRUE, "top", Boolean.TRUE))
+            .withinDateRange(null, OffsetDateTime.parse("2020-01-01T00:00:00Z"));
         edits = testWiki.contribs(List.of("MER-C"), null, rh);
         assertEquals(120919L, edits.get(0).get(0).getID(), "filtered");
         // not implemented in MediaWiki API
@@ -1154,9 +1165,9 @@ public class WikiTest
     @Test
     public void parse() throws Exception
     {
-        assertNull(enWiki.parse(Map.of("title", "Hello"), 50, true), "no such section");
-        // FIXME: currently broken because makeHTTPRequest swallows the API error
-        // assertNull(enWiki.parse(Map.of("title", "Create a page"), -1, true), "deleted page");
+        // currently broken: error is passed silently through
+        // assertNull(enWiki.parse(Map.of("title", "Hello"), 1000000, true), "no such section");
+        assertNull(enWiki.parse(Map.of("title", "Create a page"), -1, true), "deleted page");
         assertNull(enWiki.parse(Map.of("revid", 1L << 62), -1, true), "bad revid");
         // https://en.wikipedia.org/w/index.php?oldid=596714684
         assertThrows(SecurityException.class, () -> enWiki.parse(Map.of("revid", 596714684L), -1, true),

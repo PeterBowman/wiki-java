@@ -6,5 +6,6 @@ module org.wikipedia {
 
 	requires java.desktop;
 	requires java.logging;
+	requires java.net.http;
 	requires org.junit.jupiter.api;
 }

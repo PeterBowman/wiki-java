@@ -22,6 +22,7 @@ package org.wikipedia;
 
 import java.io.*;
 import java.net.*;
+import java.net.http.*;
 import java.nio.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -442,6 +443,7 @@ public class Wiki implements Comparable<Wiki>
     private ArrayList<Integer> ns_subpages = null;
 
     // user management
+    private HttpClient client;
     private final CookieManager cookies;
     private User user;
     private int statuscounter = 0;
@@ -469,7 +471,7 @@ public class Wiki implements Comparable<Wiki>
 
     // config via properties
     private final int maxtries;
-    private final int connect_timeout_msec, read_timeout_msec;
+    private final int read_timeout_msec;
     private final int log2_upload_size;
 
     // CONSTRUCTORS AND CONFIGURATION
@@ -497,7 +499,6 @@ public class Wiki implements Comparable<Wiki>
 
         logger.setLevel(loglevel);
         logger.log(Level.CONFIG, "[{0}] Using Wiki.java {1}", new Object[] { domain, version });
-        cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         
         // read in config
         Properties props = new Properties();
@@ -516,8 +517,12 @@ public class Wiki implements Comparable<Wiki>
         }
         maxtries = Integer.parseInt(props.getProperty("maxretries", "2"));
         log2_upload_size = Integer.parseInt(props.getProperty("loguploadsize", "22")); // 4 MB
-        connect_timeout_msec = Integer.parseInt(props.getProperty("connecttimeout", "30000")); // 30 seconds
         read_timeout_msec = Integer.parseInt(props.getProperty("readtimeout", "180000")); // 180 seconds
+        cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .cookieHandler(cookies)
+            .build();
     }
 
     /**
@@ -557,7 +562,7 @@ public class Wiki implements Comparable<Wiki>
         // Don't put network requests here. Servlets cannot afford to make
         // unnecessary network requests in initialization.
         Wiki wiki = new Wiki(domain, scriptPath, protocol);
-        wiki.initVars(); // construct URL bases
+        wiki.initVars();
         return wiki;
     }
 
@@ -1184,7 +1189,8 @@ public class Wiki implements Comparable<Wiki>
         // check for success
         if (line.contains("result=\"Success\""))
         {
-            user = getUser(parseAttribute(line, "lgusername", 0));
+            String returned_username = parseAttribute(line, "lgusername", 0);
+            user = getUsers(List.of(returned_username)).get(0);
             boolean apihighlimit = user.isAllowedTo("apihighlimits");
             if (apihighlimit)
             {
@@ -1274,7 +1280,8 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Determines the current database replication lag.
+     *  Determines the current database replication lag. This method does not
+     *  wait if the maxlag setting is exceeded. This method is thread safe.
      *  @return the current database replication lag
      *  @throws IOException if a network error occurs
      *  @see #setMaxLag
@@ -1283,16 +1290,25 @@ public class Wiki implements Comparable<Wiki>
      *  MediaWiki documentation</a>
      *  @since 0.10
      */
-    public int getCurrentDatabaseLag() throws IOException
+    public double getCurrentDatabaseLag() throws IOException
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "query");
         getparams.put("meta", "siteinfo");
         getparams.put("siprop", "dbrepllag");
-        String line = makeApiCall(getparams, null, "getCurrentDatabaseLag");
-        String lag = parseAttribute(line, "lag", 0);
-        log(Level.INFO, "getCurrentDatabaseLag", "Current database replication lag is " + lag + " seconds");
-        return Integer.parseInt(lag);
+
+        synchronized (this)
+        {
+            // bypass lag check for this request
+            int temp = getMaxLag();
+            setMaxLag(-1);
+            String line = makeApiCall(getparams, null, "getCurrentDatabaseLag");
+            setMaxLag(temp);
+    
+            String lag = parseAttribute(line, "lag", 0);
+            log(Level.INFO, "getCurrentDatabaseLag", "Current database replication lag is " + lag + " seconds");
+            return Double.parseDouble(lag);
+        }
     }
 
     /**
@@ -1407,21 +1423,34 @@ public class Wiki implements Comparable<Wiki>
         if (section >= 0)
             getparams.put("section", String.valueOf(section));
 
-        String response = makeApiCall(getparams, postparams, "parse");
-        if (response.contains("error code=\""))
-            // Bad section numbers, revids, deleted pages should all end up here.
-            // FIXME: makeHTTPRequest() swallows the API error "missingtitle"
-            // (deleted pages) to throw an UnknownError instead.
-            return null;
-        int y = response.indexOf('>', response.indexOf("<text")) + 1;
-        int z = response.indexOf("</text>");
+        try
+        {
+            String response = makeApiCall(getparams, postparams, "parse");
+            int y = response.indexOf('>', response.indexOf("<text")) + 1;
+            int z = response.indexOf("</text>");
 
-        // Rewrite URLs to replace useless relative links and make images work on
-        // locally saved copies of wiki pages.
-        String html = decode(response.substring(y, z));
-        html = html.replace("href=\"/wiki", "href=\"" + protocol + domain + "/wiki");
-        html = html.replace(" src=\"//", " src=\"" + protocol); // a little fragile for my liking, but will do
-        return html;
+            // Rewrite URLs to replace useless relative links and make images work on
+            // locally saved copies of wiki pages.
+            String html = decode(response.substring(y, z));
+            html = html.replace("href=\"/wiki", "href=\"" + protocol + domain + "/wiki");
+            html = html.replace(" src=\"//", " src=\"" + protocol); // a little fragile for my liking, but will do
+            return html;
+        }
+        catch (UnknownError e)
+        {
+            // Bad section numbers, revids, deleted pages should all end up here.
+            String error = parseAttribute(e.getMessage(), "code", 0);
+            switch (error)
+            {
+                case "missingtitle":
+                case "missingcontent":
+                case "nosuchsection":
+                case "nosuchrevid":
+                    return null;
+                default:
+                    throw e;
+            }
+        }
     }
 
     /**
@@ -1609,6 +1638,7 @@ public class Wiki implements Comparable<Wiki>
      *    protection state} of the page. Does not cover implied protection
      *    levels (e.g. MediaWiki namespace).
      *  <li><b>exists</b>: (Boolean) whether the page exists
+     *  <li><b>redirect</b>: (Boolean) whether the page is a redirection
      *  <li><b>lastpurged</b>: (OffsetDateTime) when the page was last purged or
      *    <code>null</code> if the page does not exist
      *  <li><b>lastrevid</b>: (Long) the revid of the top revision or -1L if the
@@ -1709,6 +1739,7 @@ public class Wiki implements Comparable<Wiki>
 
                 tempmap.put("displaytitle", parseAttribute(item, "displaytitle", 0));
                 tempmap.put("timestamp", OffsetDateTime.now(timezone));
+                tempmap.put("redirect", item.contains("redirect=\"\""));
 
                 // number of watchers
                 if (item.contains("watchers=\""))
@@ -2284,8 +2315,7 @@ public class Wiki implements Comparable<Wiki>
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Cannot delete Special and Media pages!");
-        if (user == null || !user.isAllowedTo("delete"))
-            throw new SecurityException("Cannot delete: Permission denied");
+        checkPermissions("delete", "delete");
         throttle();
 
         // edit token
@@ -2330,8 +2360,7 @@ public class Wiki implements Comparable<Wiki>
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Cannot delete Special and Media pages!");
-        if (user == null || !user.isAllowedTo("undelete"))
-            throw new SecurityException("Cannot undelete: Permission denied");
+        checkPermissions("undelete", "undelete");
         throttle();
 
         Map<String, String> getparams = new HashMap<>();
@@ -2998,13 +3027,12 @@ public class Wiki implements Comparable<Wiki>
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Special and Media pages do not have histories!");
-        if (user == null || !user.isAllowedTo("deletedhistory"))
-            throw new SecurityException("Permission denied: not able to view deleted history");
+        checkPermissions("fetch deleted history", "deletedhistory");
 
         int limit = -1;
         Map<String, String> getparams = new HashMap<>();
         getparams.put("prop", "deletedrevisions");
-        getparams.put("drvprop", "ids|user|flags|size|comment|parsedcomment|sha1|tags");
+        getparams.put("drvprop", "timestamp|ids|user|flags|size|comment|parsedcomment|sha1|tags");
         if (helper != null)
         {
             helper.setRequestType("drv");
@@ -3019,10 +3047,10 @@ public class Wiki implements Comparable<Wiki>
 
         List<Revision> delrevs = makeListQuery("drv", getparams, null, "getDeletedHistory", limit, (response, results) ->
         {
-            int x = response.indexOf("<deletedrevs>");
+            int x = response.indexOf("<deletedrevisions>");
             if (x < 0) // no deleted history
                 return;
-            for (x = response.indexOf("<page ", x); x > 0; x = response.indexOf("<page ", ++x))
+            for (x = response.indexOf("<page "); x > 0; x = response.indexOf("<page ", ++x))
             {
                 String deltitle = parseAttribute(response, "title", x);
                 int y = response.indexOf("</page>", x);
@@ -3065,8 +3093,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public List<Revision> deletedContribs(String username, Wiki.RequestHelper helper) throws IOException
     {
-        if (user == null || !user.isAllowedTo("deletedhistory"))
-            throw new SecurityException("Permission denied: not able to view deleted history");
+        checkPermissions("fetch deleted history", "deletedhistory");
 
         int limit = -1;
         Map<String, String> getparams = new HashMap<>();
@@ -3121,9 +3148,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public List<String> deletedPrefixIndex(String prefix, int namespace) throws IOException
     {
-        if (user == null || !user.isAllowedTo("deletedhistory", "deletedtext"))
-            throw new SecurityException("Permission denied: not able to view deleted history or text.");
-
+        checkPermissions("fetch deleted text", "deletedhistory", "deletedtext");
         // disallow ALL_NAMESPACES, this query is extremely slow and likely to error out.
         if (namespace == ALL_NAMESPACES)
             throw new IllegalArgumentException("deletedPrefixIndex: you must choose a namespace.");
@@ -3158,8 +3183,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public String getDeletedText(String page) throws IOException
     {
-        if (user == null || !user.isAllowedTo("deletedhistory", "deletedtext"))
-            throw new SecurityException("Permission denied: not able to view deleted history or text.");
+        checkPermissions("fetch deleted text", "deletedhistory", "deletedtext");
 
         // TODO: this can be multiquery(?)
         Map<String, String> getparams = new HashMap<>();
@@ -3230,8 +3254,7 @@ public class Wiki implements Comparable<Wiki>
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Tried to move a Special or Media page.");
-        if (user == null || !user.isAllowedTo("move"))
-            throw new SecurityException("Permission denied: cannot move pages.");
+        checkPermissions("move", "move");
         throttle();
 
         // protection and token
@@ -3297,8 +3320,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public synchronized void protect(String page, Map<String, Object> protectionstate, String reason) throws IOException, LoginException
     {
-        if (user == null || !user.isAllowedTo("protect"))
-            throw new SecurityException("Cannot protect: permission denied.");
+        checkPermissions("protect", "protect");
         throttle();
 
         Map<String, String> getparams = new HashMap<>();
@@ -3494,8 +3516,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public synchronized void rollback(Revision revision, boolean bot, String reason) throws IOException, LoginException
     {
-        if (user == null || !user.isAllowedTo("rollback"))
-            throw new SecurityException("Permission denied: cannot rollback.");
+        checkPermissions("rollback", "rollback");
         // This method is intentionally NOT throttled.
 
         // Perform the rollback.
@@ -3570,8 +3591,7 @@ public class Wiki implements Comparable<Wiki>
                 throw new UnsupportedOperationException("RevisionDeletion of pseudo-LogEntries is not supported.");
             ids[i] = temp.getID();
         }
-        if (user == null || !user.isAllowedTo("deleterevision", "deletelogentry"))
-            throw new SecurityException("Permission denied: cannot revision delete.");
+        checkPermissions("revisionDelete", "deleterevision", "deletelogentry");
         throttle();
 
         Map<String, String> getparams = new HashMap<>();
@@ -3814,30 +3834,46 @@ public class Wiki implements Comparable<Wiki>
                 throw new IllegalArgumentException("To content not specified!");
         }
 
-        String line = makeApiCall(getparams, postparams, "diff");
-
-        // strip extraneous information
-        if (line.contains("</compare>"))
+        try
         {
-            // a warning may occur here in certain circumstances e.g.
-            // https://en.wikipedia.org/w/api.php?&torelative=prev&maxlag=5&format=xml&action=compare&fromrev=255072509
-            int a = line.lastIndexOf("<compare");
-            a = line.indexOf('>', a) + 1;
-            int b = line.indexOf("</compare>", a);
-            return decode(line.substring(a, b));
+            String line = makeApiCall(getparams, postparams, "diff");
+
+            // strip extraneous information
+            if (line.contains("</compare>"))
+            {
+                // a warning may occur here in certain circumstances e.g.
+                // https://en.wikipedia.org/w/api.php?&torelative=prev&maxlag=5&format=xml&action=compare&fromrev=255072509
+                int a = line.lastIndexOf("<compare");
+                a = line.indexOf('>', a) + 1;
+                int b = line.indexOf("</compare>", a);
+                return decode(line.substring(a, b));
+            }
+            else if (line.contains("<compare "))
+                // <compare> tag has no content if there is no diff or the two
+                // revisions are identical. In particular, the API does not
+                // distinguish between:
+                // https://en.wikipedia.org/w/index.php?title=Source_Filmmaker&diff=804972897&oldid=803731343 (no difference)
+                // https://en.wikipedia.org/w/index.php?title=Dayo_Israel&oldid=738178354&diff=prev (dummy edit)
+                return "";
+            else
+                throw new AssertionError("Unreachable.");
         }
-        else if (line.contains("<compare "))
-            // <compare> tag has no content if there is no diff or the two
-            // revisions are identical. In particular, the API does not
-            // distinguish between:
-            // https://en.wikipedia.org/w/index.php?title=Source_Filmmaker&diff=804972897&oldid=803731343 (no difference)
-            // https://en.wikipedia.org/w/index.php?title=Dayo_Israel&oldid=738178354&diff=prev (dummy edit)
-            return "";
-        else
+        catch (UnknownError e)
+        {
             // Bad section numbers, revids, deleted pages should all end up here.
-            // FIXME: fetch() swallows the API error "missingtitle" (deleted
-            // pages) to throw an UnknownError instead.
-            return null;
+            String error = parseAttribute(e.getMessage(), "code", 0);
+            switch (error)
+            {
+                case "missingtitle":
+                case "missingcontent":
+                case "nosuchfromsection":
+                case "nosuchtosection":
+                case "nosuchrevid":
+                    return null;
+                default:
+                    throw e;
+            }
+        }
     }
 
     /**
@@ -3987,16 +4023,20 @@ public class Wiki implements Comparable<Wiki>
 
         // then we read the image
         logurl(url2, "getImage");
-        URLConnection connection = makeConnection(url2);
-        connection.connect();
-
-        // download image to the file
-        InputStream input = connection.getInputStream();
-        if ("gzip".equals(connection.getContentEncoding()))
-            input = new GZIPInputStream(input);
-        Files.copy(input, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        log(Level.INFO, "getImage", "Successfully retrieved image \"" + title + "\"");
-        return true;
+        HttpRequest request = makeConnection(url2).GET().build();
+        try
+        {
+            HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            boolean zip = "gzip".equals(response.headers().firstValue("Content-Encoding").orElse(""));
+            InputStream input = zip ? new GZIPInputStream(response.body()) : response.body();
+            Files.copy(input, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            log(Level.INFO, "getImage", "Successfully retrieved image \"" + title + "\"");
+            return true;
+        }
+        catch (InterruptedException ex)
+        {
+            return false; // hmmmm
+        }
     }
 
     /**
@@ -4204,19 +4244,23 @@ public class Wiki implements Comparable<Wiki>
                 // this is it
                 String url = parseAttribute(line, "url", a);
                 logurl(url, "getOldImage");
-                URLConnection connection = makeConnection(url);
-                connection.connect();
-
-                // download image to file
-                InputStream input = connection.getInputStream();
-                if ("gzip".equals(connection.getContentEncoding()))
-                    input = new GZIPInputStream(input);
-                Files.copy(input, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                // scrape archive name for logging purposes
-                String archive = Objects.requireNonNullElse(parseAttribute(line, "archivename", 0), 
-                    entry.getTitle());
-                log(Level.INFO, "getOldImage", "Successfully retrieved old image \"" + archive + "\"");
-                return true;
+                HttpRequest request = makeConnection(url).GET().build();
+                try
+                {
+                    HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                    boolean zip = "gzip".equals(response.headers().firstValue("Content-Encoding").orElse(""));
+                    InputStream input = zip ? new GZIPInputStream(response.body()) : response.body();
+                    Files.copy(input, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    // scrape archive name for logging purposes
+                    String archive = Objects.requireNonNullElse(parseAttribute(line, "archivename", 0), 
+                        entry.getTitle());
+                    log(Level.INFO, "getOldImage", "Successfully retrieved old image \"" + archive + "\"");
+                    return true;
+                }
+                catch (InterruptedException ex)
+                {
+                    // hmmm
+                }
             }
         }
         return false;
@@ -4297,10 +4341,8 @@ public class Wiki implements Comparable<Wiki>
      */
     public synchronized void upload(File file, String filename, String contents, String reason) throws IOException, LoginException
     {
-        // check for log in
-        if (user == null || !user.isAllowedTo("upload"))
-            throw new SecurityException("Permission denied: cannot upload files.");
         filename = removeNamespace(filename, FILE_NAMESPACE);
+        checkPermissions("upload", "upload");
         throttle();
 
         // protection
@@ -4420,10 +4462,8 @@ public class Wiki implements Comparable<Wiki>
      */
     public synchronized void upload(URL url, String filename, String contents, String reason) throws IOException, LoginException
     {
-        // check for log in
-        if (user == null || !user.isAllowedTo("upload_by_url"))
-            throw new SecurityException("Permission denied: cannot upload files via URL.");
         filename = removeNamespace(filename, FILE_NAMESPACE);
+        checkPermissions("upload", "upload_by_url");
         throttle();
 
         // protection
@@ -4948,8 +4988,7 @@ public class Wiki implements Comparable<Wiki>
             log(Level.WARNING, "emailUser", "User " + user.getUsername() + " is not emailable");
             return;
         }
-        if (user == null || !user.isAllowedTo("sendemail"))
-            throw new SecurityException("Permission denied: cannot email.");
+        checkPermissions("email", "sendemail");
         throttle();
 
         // post email
@@ -5006,11 +5045,9 @@ public class Wiki implements Comparable<Wiki>
     {
         // Note: blockoptions is implemented as a Map because more might be added
         // in the future.
-
         if (expiry != null && expiry.isBefore(OffsetDateTime.now()))
             throw new IllegalArgumentException("Cannot set a block with a past expiry time!");
-        if (user == null || !user.isA("sysop"))
-            throw new SecurityException("Cannot unblock: permission denied!");
+        checkPermissions("block", "block");
         throttle();
 
         // send request
@@ -5052,8 +5089,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public synchronized void unblock(String blockeduser, String reason) throws IOException, LoginException
     {
-        if (user == null || !user.isA("sysop"))
-            throw new SecurityException("Cannot unblock: permission denied!");
+        checkPermissions("unblock", "unblock");
         throttle();
 
         Map<String, String> getparams = new HashMap<>();
@@ -5191,7 +5227,6 @@ public class Wiki implements Comparable<Wiki>
     protected void watchInternal(List<String> titles, boolean unwatch) throws IOException
     {
         // create the watchlist cache
-        String state = unwatch ? "unwatch" : "watch";
         if (watchlist == null)
             getRawWatchlist();
         Map<String, String> getparams = new HashMap<>();
@@ -5199,6 +5234,7 @@ public class Wiki implements Comparable<Wiki>
         Map<String, Object> postparams = new HashMap<>();
         if (unwatch)
             postparams.put("unwatch", "1");
+        String state = unwatch ? "unwatch" : "watch";
         for (String titlestring : constructTitleString(titles))
         {
             postparams.put("titles", titlestring);
@@ -5233,11 +5269,8 @@ public class Wiki implements Comparable<Wiki>
      */
     public List<String> getRawWatchlist(boolean cache) throws IOException
     {
-        // filter anons
-        if (user == null)
-            throw new SecurityException("The watchlist is available for registered users only.");
-
         // cache
+        checkPermissions("access the watchlist", "viewmywatchlist");
         if (watchlist != null && cache)
             return new ArrayList<>(watchlist);
 
@@ -5310,8 +5343,7 @@ public class Wiki implements Comparable<Wiki>
      */
     public List<Revision> watchlist(Wiki.RequestHelper helper) throws IOException
     {
-        if (user == null)
-            throw new SecurityException("Not logged in");
+        checkPermissions("access the watchlist", "viewmywatchlist");
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "watchlist");
         getparams.put("wlprop", "ids|title|timestamp|user|comment|parsedcomment|sizes|tags");
@@ -8074,7 +8106,22 @@ public class Wiki implements Comparable<Wiki>
     }
 
     // miscellany
-
+    
+    /**
+     *  Convenience method for checking user permissions.
+     *  @param right a user rights
+     *  @param morerights additional user rights
+     *  @throws SecurityException if the permission check fails
+     *  @since 0.37
+     */
+    protected void checkPermissions(String action, String right, String... morerights)
+    {
+        if (user == null)
+            throw new SecurityException("Cannot " + action + ": not logged in.");
+        if (!user.isAllowedTo(right, morerights))
+            throw new SecurityException("Cannot " + action + ": permission denied.");
+    }
+            
     /**
      *  Constructs, sends and handles calls to the MediaWiki API. This is a
      *  low-level method for making your own, custom API calls.
@@ -8134,8 +8181,8 @@ public class Wiki implements Comparable<Wiki>
         boolean isPOST = (postparams != null && !postparams.isEmpty());
         StringBuilder stringPostBody = new StringBuilder();
         boolean multipart = false;
-        byte[] multipartPostBody = null;
-        String boundary = "----------NEXT PART----------";
+        ArrayList<byte[]> multipartPostBody = new ArrayList<>();
+        String boundary = "----------NEXT PART----------";        
         if (isPOST)
         {
             // determine whether this is a multipart post and convert any values
@@ -8151,35 +8198,25 @@ public class Wiki implements Comparable<Wiki>
 
             // now we know how we're sending it, construct the post body
             if (multipart)
-            {
-                String nextpart = "--" + boundary + "\r\n";
-                ByteArrayOutputStream bout = new ByteArrayOutputStream();
-                try (DataOutputStream out = new DataOutputStream(bout))
+            {        
+                byte[] nextpart = ("--" + boundary + "\r\n\"Content-Disposition: form-data; name=\\\"\"")
+                    .getBytes(StandardCharsets.UTF_8);
+                for (Map.Entry<String, ?> entry : postparams.entrySet())
                 {
-                    out.writeBytes(nextpart);
-
-                    // write params
-                    for (Map.Entry<String, ?> entry : postparams.entrySet())
+                    multipartPostBody.add(nextpart);
+                    Object value = entry.getValue();
+                    multipartPostBody.add((entry.getKey() + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+                    if (value instanceof String)
+                        multipartPostBody.add(("Content-Type: text/plain; charset=UTF-8\r\n\r\n" + (String)value + "\r\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                    else if (value instanceof byte[])
                     {
-                        String name = entry.getKey();
-                        Object value = entry.getValue();
-                        out.writeBytes("Content-Disposition: form-data; name=\"" + name + "\"\r\n");
-                        if (value instanceof String)
-                        {
-                            out.writeBytes("Content-Type: text/plain; charset=UTF-8\r\n\r\n");
-                            out.write(((String)value).getBytes("UTF-8"));
-                        }
-                        else if (value instanceof byte[])
-                        {
-                            out.writeBytes("Content-Type: application/octet-stream\r\n\r\n");
-                            out.write((byte[])value);
-                        }
-                        out.writeBytes("\r\n");
-                        out.writeBytes(nextpart);
+                        multipartPostBody.add("Content-Type: application/octet-stream\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+                        multipartPostBody.add((byte[])value);
+                        multipartPostBody.add("\r\n".getBytes(StandardCharsets.UTF_8));
                     }
-                    out.writeBytes("--\r\n");
                 }
-                multipartPostBody = bout.toByteArray();
+                multipartPostBody.add((boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
             }
             else
             {
@@ -8203,69 +8240,26 @@ public class Wiki implements Comparable<Wiki>
             tries--;
             try
             {
-                // Cookie handling should be handled locally instead of setting
-                // the system wide cookie manager to make sure a local state is
-                // saved per instance
-                // modified from https://stackoverflow.com/questions/16150089
-                // see https://github.com/MER-C/wiki-java/issues/157
-                URLConnection connection = makeConnection(url);
-                CookieStore store = cookies.getCookieStore();
-                List<HttpCookie> cookielist = store.getCookies();
-                if (!cookielist.isEmpty())
-                {
-                    StringJoiner sb = new StringJoiner(";");
-                    for (HttpCookie cookie : cookielist)
-                        sb.add(cookie.toString());
-                    connection.setRequestProperty("Cookie", sb.toString());
-                }
-
+                var connection = makeConnection(url);
                 if (isPOST)
                 {
-                    connection.setDoOutput(true);
                     if (multipart)
-                        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-                }
-                connection.connect();
-                if (isPOST)
-                {
-                    // send the post body
-                    if (multipart)
-                    {
-                        try (OutputStream uout = connection.getOutputStream())
-                        {
-                            uout.write(multipartPostBody);
-                        }
-                    }
+                        connection = connection.POST(HttpRequest.BodyPublishers.ofByteArrays(multipartPostBody))
+                            .header("Content-Type", "multipart/form-data; boundary=" + boundary);
                     else
-                    {
-                        try (OutputStreamWriter out = new OutputStreamWriter(connection.getOutputStream(), "UTF-8"))
-                        {
-                            out.write(stringPostBody.toString());
-                        }
-                    }
+                        connection = connection.POST(HttpRequest.BodyPublishers.ofString(stringPostBody.toString()))
+                            .header("Content-Type", "application/x-www-form-urlencoded");
                 }
 
-                // Check database lag and retry if necessary. These retries
-                // don't count.
-                if (checkLag(connection))
+                HttpResponse<InputStream> hr = client.send(connection.build(), HttpResponse.BodyHandlers.ofInputStream());
+                if (checkLag(hr))
                 {
                     tries++;
                     throw new HttpRetryException("Database lagged.", 503);
                 }
 
-                // Parse cookies from response and store for later. Header fields
-                // are case-insensitive and MW may serve cookies split into both
-                // 'set-cookie' and 'Set-Cookie' headers (see T249680).
-                Map<String, List<String>> headerFields = connection.getHeaderFields();
-                headerFields.entrySet().stream()
-                    .filter(e -> "set-cookie".equalsIgnoreCase(e.getKey())) // key can be null
-                    .map(Map.Entry::getValue)
-                    .flatMap(List::stream)
-                    .flatMap(cookieHeader -> HttpCookie.parse(cookieHeader).stream())
-                    .forEach(cookie -> store.add(null, cookie));
-
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(
-                    zipped ? new GZIPInputStream(connection.getInputStream()) : connection.getInputStream(), "UTF-8")))
+                    zipped ? new GZIPInputStream(hr.body()) : hr.body(), "UTF-8")))
                 {
                     response = in.lines().collect(Collectors.joining("\n"));
                 }
@@ -8316,16 +8310,13 @@ public class Wiki implements Comparable<Wiki>
                     throw new AssertionError(description);
                 case "permissiondenied":
                     throw new SecurityException(description);
-                // harmless, pass error to calling method
-                case "nosuchsection":     // getSectionText(), parse()
-                case "nosuchfromsection": // diff()
-                case "nosuchtosection":   // diff()
-                case "nosuchrevid":       // parse(), diff()
+                // Harmless, response goes to calling method. TODO: remove this.
+                case "nosuchsection":     // getSectionText()
                 case "cantundelete":      // undelete(), page has no deleted revisions
                     break;
                 // Something *really* bad happened. Most of these are self-explanatory
                 // and are indicative of bugs (not necessarily in this framework) or
-                // can be avoided entirely.
+                // can be avoided entirely. Others are kicked to the caller to handle.
                 default:
                     throw new UnknownError("MW API error. Server response was: " + response);
             }
@@ -8372,51 +8363,56 @@ public class Wiki implements Comparable<Wiki>
 
     /**
      *  Checks for database lag and sleeps if {@code lag < getMaxLag()}.
-     *  @param connection the URL connection used in the request
+     *  @param response the HTTP response received
      *  @return true if there was sufficient database lag.
+     *  @throws InterruptedException if any wait was interrupted
      *  @see #getMaxLag()
      *  @see <a href="https://mediawiki.org/wiki/Manual:Maxlag_parameter">
      *  MediaWiki documentation</a>
      *  @since 0.32
      */
-    protected synchronized boolean checkLag(URLConnection connection)
+    protected synchronized boolean checkLag(HttpResponse response) throws InterruptedException
     {
-        int lag = connection.getHeaderFieldInt("X-Database-Lag", -5);
+        HttpHeaders hdrs = response.headers();
+        long lag = hdrs.firstValueAsLong("X-Database-Lag").orElse(-5);
         // X-Database-Lag is the current lag rounded down to the nearest integer.
         // Thus, we need to retry in case of equality.
         if (lag >= maxlag)
         {
-            try
-            {
-                int time = connection.getHeaderFieldInt("Retry-After", 10);
-                logger.log(Level.WARNING, "Current database lag {0} s exceeds maxlag of {1} s, waiting {2} s.", new Object[] { lag, maxlag, time });
-                Thread.sleep(time * 1000L);
-            }
-            catch (InterruptedException ignored)
-            {
-            }
+            long time = hdrs.firstValueAsLong("Retry-After").orElse(10);
+            logger.log(Level.WARNING, "Current database lag {0} s exceeds maxlag of {1} s, waiting {2} s.", new Object[] { lag, maxlag, time });
+            Thread.sleep(time * 1000L);
             return true;
         }
         return false;
     }
 
     /**
-     *  Creates a new URL connection. Override to change SSL handling, use a
-     *  proxy, etc.
+     *  Sets the HTTPClient used by this instance. Use this to set a proxy, 
+     *  SSL parameters and the connection timeout.
+     *  @param builder a HTTP request builder
+     *  @since 0.37
+     */
+    public void setHttpClient(HttpClient.Builder builder)
+    {
+        client = builder.cookieHandler(cookies).build();
+    }
+
+    /**
+     *  Creates a new HTTP request. Override to change request properties.
      *  @param url a URL string
-     *  @return a connection to that URL
+     *  @return a HTTP request builder for that URL
      *  @throws IOException if a network error occurs
      *  @since 0.31
      */
-    protected URLConnection makeConnection(String url) throws IOException
+    protected HttpRequest.Builder makeConnection(String url) throws IOException
     {
-        URLConnection u = new URL(url).openConnection();
-        u.setConnectTimeout(connect_timeout_msec);
-        u.setReadTimeout(read_timeout_msec);
+        var builder = HttpRequest.newBuilder(URI.create(url))
+            .timeout(Duration.ofMillis(read_timeout_msec))
+            .header("User-Agent", useragent);
         if (zipped)
-            u.setRequestProperty("Accept-encoding", "gzip");
-        u.setRequestProperty("User-Agent", useragent);
-        return u;
+            builder = builder.header("Accept-encoding", "gzip");
+        return builder;
     }
 
     /**
