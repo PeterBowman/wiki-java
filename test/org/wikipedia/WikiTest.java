@@ -158,6 +158,7 @@ public class WikiTest
     {
         assertEquals(Wiki.CATEGORY_NAMESPACE, enWiki.namespace("Category:CSD"), "en category");
         assertEquals(Wiki.CATEGORY_NAMESPACE, enWiki.namespace("category:CSD"), "en category lower case");
+        assertEquals(Wiki.CATEGORY_NAMESPACE, enWiki.namespace("CaTeGoRy:CSD"), "en category random inner case");
         assertEquals(Wiki.HELP_TALK_NAMESPACE, enWiki.namespace("Help talk:About"), "en help talk");
         assertEquals(Wiki.HELP_TALK_NAMESPACE, enWiki.namespace("help talk:About"), "en help talk lower case");
         assertEquals(Wiki.HELP_TALK_NAMESPACE, enWiki.namespace("help_talk:About"), "en help talk lower case underscore");
@@ -335,10 +336,10 @@ public class WikiTest
     @Test
     public void resolveRedirects() throws Exception
     {
-        List<String> titles = List.of("Main page", "Main Page", "sdkghsdklg", 
-            "Hello.jpg", "Main page", "Fish & chips");
-        List<String> expected = List.of("Main Page", "Main Page", "sdkghsdklg", 
-            "Goatse.cx", "Main Page", "Fish and chips");
+        List<String> titles = List.of("Main page", "Main Page", "sdkghsdklg",
+            "Hello.jpg", "main page", "Fish & chips", "Fish&nbsp;&&nbsp;chips");
+        List<String> expected = List.of("Main Page", "Main Page", "Sdkghsdklg",
+            "Goatse.cx", "Main Page", "Fish and chips", "Fish and chips");
         assertEquals(expected, enWiki.resolveRedirects(titles));
         assertEquals(List.of("الصفحة الرئيسية"), arWiki.resolveRedirects(List.of("الصفحه الرئيسيه")), "rtl");
     }
@@ -358,7 +359,7 @@ public class WikiTest
         List<String> pages = List.of("Skflsj&dkfs", "Template:POTD/2018-11-01", "User:MER-C/monobook.js");
         List<List<String>> images = enWiki.getImagesOnPage(pages);
         assertTrue(images.get(0).isEmpty(), "non-existent page");
-        assertEquals(List.of("File:Adelie Penguins on iceberg.jpg"), images.get(1));
+        assertEquals(List.of("File:Adelie Penguins on iceberg.jpg", "File:Eagle 01.svg"), images.get(1));
         assertTrue(images.get(2).isEmpty(), "page with no images");
     }
 
@@ -664,7 +665,7 @@ public class WikiTest
     @Test
     public void getPageInfo() throws Exception
     {
-        List<String> pages = List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages", "HomePage");
+        List<String> pages = List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages", "HomePage", "1&nbsp;000");
         List<Map<String, Object>> pageinfo = enWiki.getPageInfo(pages);
 
         // Main Page
@@ -692,6 +693,16 @@ public class WikiTest
         
         // redirect
         assertTrue((Boolean)pageinfo.get(4).get("redirect"));
+        
+        // HTML entities in title (special normalization case)
+        assertEquals("1 000", pageinfo.get(5).get("pagename"), "normalized HTML entities");
+        
+        List<String> userpages = List.of("User:Beispielnutzer", "User:Sicherlich");
+        List<Map<String, Object>> userpageinfo = deWiki.getPageInfo(userpages);
+        
+        // namespace prefix normalization on gender-aware wiki
+        assertEquals(userpageinfo.get(0).get("pagename"), "Benutzer:Beispielnutzer"); // male/default prefix
+        assertEquals(userpageinfo.get(1).get("pagename"), "Benutzerin:Sicherlich"); // female prefix alias
     }
 
     @Test
@@ -700,9 +711,10 @@ public class WikiTest
         // highly volatile content, so not amenable to unit testing
         // but can check clear zero categories and title rewrites
         List<int[]> results = testWiki.getCategoryMemberCounts(List.of("Category:Testssss",
-            "Wikipedia noticeboards", "Category:Wikipedia noticeboards"));
+            "Wikipedia noticeboards", "Category:Wikipedia noticeboards", "Wikipedia&nbsp;noticeboards"));
         assertArrayEquals(new int[] {0, 0, 0, 0}, results.get(0), "non-existent category");
         assertArrayEquals(results.get(2), results.get(1), "check title rewrite");
+        assertArrayEquals(results.get(3), results.get(1), "check title normalization");
     }
 
     @Test
@@ -710,7 +722,8 @@ public class WikiTest
     {
         List<Map<String, Object>> results = enWiki.getFileMetadata(List.of(
             "File:Tianasquare.jpg", "File:Lweo&pafd.blah", "File:Phra Phuttha Chinnarat (II).jpg", 
-            "File:WikipediaSignpostIcon.svg", "File:Mandelbrotzoom 20191023.webm"));
+            "File:WikipediaSignpostIcon.svg", "File:Mandelbrotzoom 20191023.webm",
+            "File:Mandelbrotzoom&nbsp;20191023.webm"));
         
         // https://en.wikipedia.org/wiki/File:Tianasquare.jpg
         Map<String, Object> tankman = results.get(0);
@@ -751,8 +764,33 @@ public class WikiTest
         assertEquals("video/webm", fractal.get("mime"));
         assertEquals(2703768090L, fractal.get("size"));
         
+        // server-side normalization
+        assertEquals(fractal, results.get(5));
+        
         // further tests blocked on MediaWiki API rewrite
         // see https://phabricator.wikimedia.org/T89971
+    }
+    
+    @Test
+    public void listDeletedFiles() throws Exception
+    {
+        List<Wiki.LogEntry> files = enWiki.listDeletedFiles("fdb4e6b0e934c02e52cd732508247b895ac6a805", null, null);
+        // test is unstable, so filter by date range to make it stable
+        OffsetDateTime start = OffsetDateTime.parse("2007-08-07T00:00:00Z");
+        OffsetDateTime end = OffsetDateTime.parse("2007-08-08T00:00:00Z");
+        for (Wiki.LogEntry file : files)
+        {
+            OffsetDateTime ts = file.getTimestamp();
+            if (ts.isAfter(start) && ts.isBefore(end))
+            {
+                // [[Special:Undelete/File:Example.png]]
+                assertEquals("2007-08-07T08:35:39Z", ts.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+                assertEquals("Ilmari Karonen", file.getUser());
+                assertNull(file.getComment()); // no privileges => no content
+                assertNull(file.getParsedComment());
+                assertEquals(Wiki.UPLOAD_LOG, file.getType());
+            }
+        }
     }
 
     @Test
@@ -764,15 +802,17 @@ public class WikiTest
     @Test
     public void getInterWikiLinks() throws Exception
     {
-        List<String> inputs = List.of("Test", "Gkdfkkl&djfdf", "Perth (disambiguation)", "Test", "Albert Einstein");        
+        List<String> inputs = List.of("Test", "Gkdfkkl&djfdf", "Perth (disambiguation)", "Test", "Albert Einstein", "1000&nbsp;(number)");        
         var result = enWiki.getInterWikiLinks(inputs);
         
         assertTrue(result.get(1).isEmpty(), "non-existing page");
         assertEquals(result.get(0), result.get(3), "check duplicate removal");
+        assertNotNull(result.get(5), "check title normalization");
         // quick functionality verification
         assertEquals(result.get(0).get("ja"), "テスト");
         assertEquals(result.get(2).get("pl"), "Perth (ujednoznacznienie)");
         assertEquals(result.get(4).get("zh"), "阿尔伯特·爱因斯坦");
+        assertEquals(result.get(5).get("it"), "1000 (numero)");
     }
 
     @Test
@@ -891,7 +931,7 @@ public class WikiTest
         // check namespace filtering (can test functionality here)
         List<String> titles = List.of("Wikipedia:Featured picture candidates");
         results = enWiki.whatLinksHere(titles, false, false, Wiki.MAIN_NAMESPACE);
-        assertEquals(List.of("Wikipedia community", "Featured picture candidates", 
+        assertEquals(List.of("FPC", "Wikipedia community", "Featured picture candidates", 
             "Featured picture candidate"), results.get(0), "namespace filter");
         
         // check redirect filtering
@@ -1137,6 +1177,10 @@ public class WikiTest
             text.get(1), "decoding");
         assertNull(text.get(2), "non-existent page");
         assertEquals("", text.get(3), "empty page");
+        
+        List<String> text2 = deWiki.getText(List.of("User:Beispielnutzer", "User:Sicherlich"), null, -1);
+        assertNotNull(text2.get(0), "resolve default namespace prefix");
+        assertNotNull(text2.get(1), "resolve namespace prefix alias");
     }
 
     @Test
@@ -1250,7 +1294,7 @@ public class WikiTest
     {
         List<String> titles = new ArrayList<>();
         for (int i = 0; i < 101; i++)
-            titles.add("a" + i);
+            titles.add("A" + i);
         // duplicates should be removed
         for (int i = 0; i < 101; i++)
             titles.add("A" + i);
