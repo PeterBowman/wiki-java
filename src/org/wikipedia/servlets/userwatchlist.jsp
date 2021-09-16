@@ -6,7 +6,7 @@
     Affero GNU GPL version 3 or later, see <https://www.gnu.org/licenses/agpl.html>
     for details. There is NO WARRANTY, to the extent permitted by law.
 -->
-
+<%@ include file="security.jspf" %>
 <%
     request.setAttribute("toolname", "User watchlist");
     request.setAttribute("earliest_default", LocalDate.now(ZoneOffset.UTC).minusDays(30));
@@ -69,8 +69,9 @@ Someone # Spam
     <td><input type=date name=earliest value="<%= earliest %>"> to
         <input type=date name=latest value="<%= latest %>"> (inclusive)
 <tr><td>Show:
-    <td><input type=checkbox name=newonly value=1<%= newonly ? " checked" : 
-        "" %>>New pages only
+    <td><input type=checkbox name=newonly id="newonly" value=1<%= newonly ? " checked" : 
+        "" %>>
+        <label for="newonly">New pages only</label>
 <tr><td>Skip:
     <td><input type=number size=50 name=skip value="<%= skip %>">
 </table>
@@ -95,7 +96,7 @@ Someone # Spam
     else if (inputpage.matches("^User:.+/.+\\.(cs|j)s$"))
     {
         String us = inputpage.substring(5, inputpage.indexOf('/'));
-        Wiki.User us2 = enWiki.getUser(us);
+        Wiki.User us2 = enWiki.getUsers(List.of(us)).get(0);
         if (us2 == null || !us2.isA("sysop"))
         {
             request.setAttribute("error", "TESTING WOOP WOOP WOOP!");
@@ -103,7 +104,7 @@ Someone # Spam
 <%@ include file="footer.jspf" %>
 <%
         }
-        String text = enWiki.getPageText(inputpage);
+        String text = enWiki.getPageText(List.of(inputpage)).get(0);
         if (text == null)
         {
             request.setAttribute("error", "ERROR: page &quot;" + ServletUtils.sanitizeForHTML(inputpage) + "&quot; does not exist!");

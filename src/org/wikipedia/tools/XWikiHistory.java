@@ -19,6 +19,7 @@
  */
 package org.wikipedia.tools;
 
+import java.io.IOException;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
@@ -33,11 +34,12 @@ import org.wikipedia.*;
  */
 public class XWikiHistory
 {
-    private static WMFWiki wikidata = WMFWiki.newSession("www.wikidata.org");
+    private final static WMFWikiFarm sessions = new WMFWikiFarm();
     
     /**
      *  Runs this program.
-     *  @param args the command line arguments
+     *  @param args the command line arguments, args[0] = language code e.g. "en",
+     *  args[1] = article name
      */
     public static void main(String[] args) throws Exception
     {
@@ -45,70 +47,34 @@ public class XWikiHistory
         // (1) excerpts from page history - first 5 and last 5 revisions
         // (2) page metadata and usual page links (talk, history, delete, undelete, etc.)
         // (3) page logs
-        // (4) more creator metadata
         
-        // expected: args[0] language, args[1] = article
-        WMFWiki firstwiki = WMFWiki.newSession(args[0] + ".wikipedia.org");
-        List<Map<String, String>> interwikis = firstwiki.getInterWikiLinks(List.of(args[1]));
-        Map<WMFWiki, String> wikiarticles = new LinkedHashMap<>();
-        wikiarticles.put(firstwiki, args[1]);
-        for (var entry : interwikis.get(0).entrySet())
-        {
-            WMFWiki new_wiki = WMFWiki.newSession(entry.getKey() + ".wikipedia.org");
-            wikiarticles.put(new_wiki, entry.getValue());
-        }
+        WMFWiki home = sessions.sharedSession(args[0] + ".wikipedia.org");
+        WMFWiki wikidata = sessions.sharedSession("www.wikidata.org");
+        Map<WMFWiki, String> wikiarticles = getArticles(home, args[1]);
+        Map<WMFWiki, List<Wiki.Revision>> histories = getHistories(wikiarticles);
+        Map<WMFWiki, Wiki.User> creators = getCreators(histories);
+        Map<WMFWiki, String> snippets = getSnippets(wikiarticles);
         
+        System.out.println("==" + args[1] + "==");
         System.out.println("{| class=\"wikitable sortable\"");
         System.out.println("! Language !! Page !! Creation date !! Creator !! Creator foreign edit count !! Snippet");
-        
-        // Wikidata
-        String wdtitle = firstwiki.getWikidataItems(List.of(args[1])).get(0);
-        Map<Wiki, List<Wiki.LogEntry>> deletions = new HashMap<>();
-        if (wdtitle != null)
-        {
-            deletions = fetchCrossWikiDeletionLogs(wdtitle);
-            Wiki.Revision last = wikidata.getFirstRevision(wdtitle);
-            Wiki.User creator = wikidata.getUsers(List.of(last.getUser())).get(0);
-            List<String> cells = List.of(
-                "Wikidata",
-                "[[d:" + wdtitle + "|" + wdtitle + "]]",
-                last.getTimestamp().toString(),
-                Users.generateWikitextSummaryLinksShort(last.getUser()), 
-                creator == null ? "null" : String.valueOf(creator.countEdits()), "-");
-            System.out.println(WikitextUtils.addTableRow(cells));
-        }
         
         for (var entry : wikiarticles.entrySet())
         {
             WMFWiki wiki = entry.getKey();
             String page = entry.getValue();
-            
-            // Map<String, Object> pageinfo = wiki.getPageInfo(List.of(page)).get(0);
-            String snippet = wiki.getLedeAsPlainText(List.of(page)).get(0);
-            
-            // page history (top, bottom)
-            Wiki.RequestHelper rh = wiki.new RequestHelper()
-                .limitedTo(10);
-            // List<Wiki.Revision> tophistory = wiki.getPageHistory(page, rh);
-            rh = rh.reverse(true);
-            List<Wiki.Revision> bottomhistory = wiki.getPageHistory(page, rh);
-            
-            // creator 
-            // some wikis still allow article creation by IPs
+            List<Wiki.Revision> bottomhistory = histories.get(wiki);
             String username = bottomhistory.get(0).getUser();
-            Wiki.User creator = null;
-            if (username != null)
-                creator = wiki.getUsers(List.of(username)).get(0);
-            Collections.reverse(bottomhistory);
+            Wiki.User creator = creators.get(wiki);
+            // Map<String, Object> pageinfo = wiki.getPageInfo(List.of(page)).get(0);
+            String snippet = snippets.get(wiki);
             
             List<String> tablerows = List.of(wiki.getDomain(),
-                "[" + wiki.getPageUrl(page) + " " + page + "]",
+                "[" + wiki.getPageUrl(page) + " " + page + "] ([" + wiki.getPageUrl("Special:PageHistory/" + page) + " history])",
                 bottomhistory.get(0).getTimestamp().toString(),
-                Users.generateWikitextSummaryLinksShort(username) 
-                    + "<br>([" + wiki.getPageUrl("User:" + username) + " foreign user] &middot; "
-                    + "[" + wiki.getPageUrl("User talk:" + username) + " foreign talk] &middot; "
-                    + "[" + wiki.getPageUrl("Special:Contributions/" + username) + " foreign contribs] &middot; "
-                    + "[[m:Special:CentralAuth/" + username + "|CA]])",
+                "[" + wiki.getPageUrl("User:" + username) + " " + username + "] ("
+                    + "[" + wiki.getPageUrl("User talk:" + username) + " talk] &middot; "
+                    + "[" + wiki.getPageUrl("Special:Contributions/" + username) + " contribs])",
                 creator == null ? "0" : String.valueOf(creator.countEdits()),
                 snippet == null ? "null" : snippet);
             System.out.println(WikitextUtils.addTableRow(tablerows));
@@ -116,25 +82,104 @@ public class XWikiHistory
         System.out.println("|}");
         
         // output deletion logs
-        System.out.println("==Cross-wiki deletion log==");
-        System.out.println("{| class=\"wikitable sortable\"");
-        System.out.println("! Project !! Date !! Admin !! Action !! Title !! Reason");
-        deletions.forEach((wiki, entries) ->
+        String wdtitle = wikiarticles.get(wikidata);
+        if (wdtitle != null)
         {
-            String domain = wiki.getDomain();
-            for (Wiki.LogEntry le : entries)
+            Map<WMFWiki, List<Wiki.LogEntry>> deletions = getCrossWikiDeletionLogs(wdtitle);
+            System.out.println("===Cross-wiki deletion log===");
+            System.out.println("{| class=\"wikitable sortable\"");
+            System.out.println("! Project !! Date !! Admin !! Action !! Title !! Reason");
+            deletions.forEach((wiki, entries) ->
             {
-                System.out.println(WikitextUtils.addTableRow(List.of(
-                    domain,
-                    le.getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-                    le.getUser(),
-                    le.getAction(),
-                    le.getTitle(),
-                    "<nowiki>" + le.getComment() + "</nowiki>")
-                ));
-            }
-        });
+                String domain = wiki.getDomain();
+                for (Wiki.LogEntry le : entries)
+                {
+                    System.out.println(WikitextUtils.addTableRow(List.of(
+                        domain,
+                        le.getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                        le.getUser(),
+                        le.getAction(),
+                        le.getTitle(),
+                        "<nowiki>" + le.getComment() + "</nowiki>")
+                    ));
+                }
+            });
+            System.out.println("|}");
+        }
+        
+        // global user information
+        System.out.println("===Creator global user info===");
+        System.out.println("{| class=\"wikitable sortable\"");
+        System.out.println("! Username !! Global edit count !! Home !! Wikis edited");
+        for (WMFWiki wiki : wikiarticles.keySet())
+        {
+            // What if a user creates more than one article? They appear twice?
+            Wiki.User user = creators.get(wiki);
+            if (user == null)
+                continue;
+            String username = user.getUsername();
+            Map<String, Object> globaluserinfo = sessions.getGlobalUserInfo(username);
+            System.out.println(WikitextUtils.addTableRow(List.of(
+                Users.generateWikitextSummaryLinksShort(username),
+                "" + globaluserinfo.get("editcount"),
+                (String)globaluserinfo.get("home"),
+                "[[m:Special:CentralAuth/" + username + "|" + globaluserinfo.get("wikicount") + "]]"
+                )));
+        }
         System.out.println("|}");
+    }
+    
+    public static Map<WMFWiki, String> getArticles(WMFWiki home, String article) throws IOException
+    {
+        WMFWiki wikidata = sessions.sharedSession("www.wikidata.org");
+        List<Map<String, String>> interwikis = home.getInterWikiLinks(List.of(article));
+        Map<WMFWiki, String> ret = new LinkedHashMap<>();
+        ret.put(wikidata, home.getWikidataItems(List.of(article)).get(0));
+        ret.put(home, article);
+        for (var entry : interwikis.get(0).entrySet())
+        {
+            WMFWiki new_wiki = sessions.sharedSession(entry.getKey() + ".wikipedia.org");
+            ret.put(new_wiki, entry.getValue());
+        }
+        return ret;
+    }
+    
+    public static Map<WMFWiki, List<Wiki.Revision>> getHistories(Map<WMFWiki, String> articles) throws IOException
+    {
+        Map<WMFWiki, List<Wiki.Revision>> ret = new LinkedHashMap<>();
+        for (var entry : articles.entrySet())
+        {
+            WMFWiki wiki = entry.getKey();
+            Wiki.RequestHelper rh = wiki.new RequestHelper()
+                .limitedTo(10)
+                .reverse(true);
+            ret.put(wiki, wiki.getPageHistory(entry.getValue(), rh));
+        }
+        return ret;
+    }
+    
+    public static Map<WMFWiki, Wiki.User> getCreators(Map<WMFWiki, List<Wiki.Revision>> histories) throws IOException
+    {
+        Map<WMFWiki, Wiki.User> ret = new LinkedHashMap<>();
+        for (var entry : histories.entrySet())
+        {
+            WMFWiki wiki = entry.getKey();
+            String creator = entry.getValue().get(0).getUser();
+            ret.put(wiki, wiki.getUsers(List.of(creator)).get(0));
+        }
+        return ret;
+    }
+    
+    public static Map<WMFWiki, String> getSnippets(Map<WMFWiki, String> articles) throws IOException
+    {
+        Map<WMFWiki, String> ret = new LinkedHashMap<>();
+        for (var entry : articles.entrySet())
+        {
+            WMFWiki wiki = entry.getKey();
+            String article = entry.getValue();
+            ret.put(wiki, wiki.getLedeAsPlainText(List.of(article)).get(0));
+        }
+        return ret;
     }
     
     /**
@@ -145,7 +190,7 @@ public class XWikiHistory
      *  @return a map: the wiki and the corresponding deletion log entries
      *  @throws Exception if a network error occurs
      */
-    public static Map<Wiki, List<Wiki.LogEntry>> fetchCrossWikiDeletionLogs(String wditem) throws Exception
+    public static Map<WMFWiki, List<Wiki.LogEntry>> getCrossWikiDeletionLogs(String wditem) throws Exception
     {
         // Implemention note: deletion removes a page from its corresponding
         // Wikidata item with a specific edit summary. However, edit summaries 
@@ -154,8 +199,9 @@ public class XWikiHistory
         // /* clientsitelink-remove:1||enwiki */ DeletedPageName
         //
         // WikiBase does some substitution before you see it. The API does not.
+        WMFWiki wikidata = sessions.sharedSession("www.wikidata.org");
         List<Wiki.Revision> wdhistory = wikidata.getPageHistory(wditem, null);
-        Map<Wiki, List<Wiki.LogEntry>> ret = new HashMap<>();
+        Map<WMFWiki, List<Wiki.LogEntry>> ret = new HashMap<>();
         for (Wiki.Revision revision : wdhistory)
         {
             String comment = revision.getComment();
@@ -164,7 +210,7 @@ public class XWikiHistory
                 int end = comment.indexOf("*/") - 1;
                 String dbname = comment.substring(comment.indexOf("||") + 2, end);
                 String pagename = comment.substring(end + 3);
-                WMFWiki local = WMFWiki.newSessionFromDBName(dbname);
+                WMFWiki local = sessions.sharedSession(WMFWikiFarm.dbNameToDomainName(dbname));
                 Wiki.RequestHelper rh = local.new RequestHelper().byTitle(pagename);
                 ret.put(local, local.getLogEntries(Wiki.DELETION_LOG, null, rh));
             }

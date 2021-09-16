@@ -238,6 +238,21 @@ public class WikiTest
             assertEquals(talkpage, enWiki.getTalkPage(page));
     }
 
+    @ParameterizedTest
+    @CsvSource({
+        "Talk:Hello, Hello",
+        "User talk:Hello, User:Hello",
+        "Hello, EXCEPTION",       // content page of a content page
+        "Special:Newpages, EXCEPTION", // special pages don't have content pages
+        "Media:Wiki.png, EXCEPTION"})  // media pages don't have content pages    
+    public void getContentPage(String page, String contentpage) throws Exception
+    {
+        if (contentpage.equals("EXCEPTION"))
+            assertThrows(IllegalArgumentException.class, () -> enWiki.getContentPage(page));
+        else
+            assertEquals(contentpage, enWiki.getContentPage(page));
+    }
+    
     @Test
     public void getRootPage() throws Exception
     {
@@ -401,7 +416,7 @@ public class WikiTest
         Wiki.RequestHelper rh = enWiki.new RequestHelper()
             .filterBy(Map.of("hidden", Boolean.FALSE));
         actual = enWiki.getCategories(List.of("Category:Wikipedia articles with undisclosed paid content"), rh, false);
-        assertEquals(expected2.subList(1, 2), actual.get(0), "filter hidden categories");
+        assertTrue(actual.get(0).isEmpty(), "filter hidden categories");
     }
 
     @Test
@@ -561,22 +576,27 @@ public class WikiTest
     {
         // https://en.wikipedia.org/wiki/Special:Blocklist/Nimimaan
         // see also getLogEntries() below
-        List<Wiki.LogEntry> le = enWiki.getBlockList("Nimimaan", null);
-        assertEquals(-1, le.get(0).getID());
-        assertEquals("2016-06-21T13:14:54Z", le.get(0).getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
-        assertEquals("MER-C", le.get(0).getUser());
-        assertEquals(Wiki.BLOCK_LOG, le.get(0).getType());
-        assertEquals("block", le.get(0).getAction());
-        assertEquals("User:Nimimaan", le.get(0).getTitle());
-        assertEquals("spambot", le.get(0).getComment());
+        List<Wiki.LogEntry> le = enWiki.getBlockList(List.of("Nimimaan", "Bodiadub"), null);
+        assertEquals(-1, le.get(1).getID());
+        assertEquals("2016-06-21T13:14:54Z", le.get(1).getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        assertEquals("MER-C", le.get(1).getUser());
+        assertEquals(Wiki.BLOCK_LOG, le.get(1).getType());
+        assertEquals("block", le.get(1).getAction());
+        assertEquals("User:Nimimaan", le.get(1).getTitle());
+        assertEquals("spambot", le.get(1).getComment());
 //        assertEquals(new Object[] {
 //            false, true, // hard block (not anon only), account creation disabled,
 //            false, true, // autoblock enabled, email disabled
 //            true, "indefinite" // talk page access revoked, expiry
 //        }, le[0].getDetails(), "block parameters");
 
+        assertEquals("2019-05-22T03:28:04Z", le.get(0).getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        assertEquals("TonyBallioni", le.get(0).getUser());
+        assertEquals("User:Bodiadub", le.get(0).getTitle());
+        assertEquals("{{checkuserblock-account}}", le.get(0).getComment());
+
         // This IP address should not be blocked (it is reserved)
-        le = enWiki.getBlockList("0.0.0.0", null);
+        le = enWiki.getBlockList(List.of("0.0.0.0"), null);
         assertTrue(le.isEmpty(), "0.0.0.0 should not be blocked");
     }
 
@@ -1300,14 +1320,16 @@ public class WikiTest
             titles.add("A" + i);
         List<String> expected = new ArrayList<>();
         // slowmax == 50 for Wikimedia wikis if not logged in
-        expected.add("A0|A1|A10|A100|A11|A12|A13|A14|A15|A16|A17|A18|A19|A2|" +
-            "A20|A21|A22|A23|A24|A25|A26|A27|A28|A29|A3|A30|A31|A32|A33|A34|" +
-            "A35|A36|A37|A38|A39|A4|A40|A41|A42|A43|A44|A45|A46|A47|A48|A49|" +
-            "A5|A50|A51|A52");
-        expected.add("A53|A54|A55|A56|A57|A58|A59|A6|A60|A61|A62|A63|A64|A65|" +
-            "A66|A67|A68|A69|A7|A70|A71|A72|A73|A74|A75|A76|A77|A78|A79|A8|" +
-            "A80|A81|A82|A83|A84|A85|A86|A87|A88|A89|A9|A90|A91|A92|A93|A94|" +
-            "A95|A96|A97|A98");
+        expected.add("""
+            A0|A1|A10|A100|A11|A12|A13|A14|A15|A16|A17|A18|A19|A2|\
+            A20|A21|A22|A23|A24|A25|A26|A27|A28|A29|A3|A30|A31|A32|A33|A34|\
+            A35|A36|A37|A38|A39|A4|A40|A41|A42|A43|A44|A45|A46|A47|A48|A49|\
+            A5|A50|A51|A52""");
+        expected.add("""
+            A53|A54|A55|A56|A57|A58|A59|A6|A60|A61|A62|A63|A64|A65|\
+            A66|A67|A68|A69|A7|A70|A71|A72|A73|A74|A75|A76|A77|A78|A79|A8|\
+            A80|A81|A82|A83|A84|A85|A86|A87|A88|A89|A9|A90|A91|A92|A93|A94|\
+            A95|A96|A97|A98""");
         expected.add("A99");
         List<String> actual = enWiki.constructTitleString(titles);
         assertEquals(expected, actual);

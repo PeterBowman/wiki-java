@@ -15,7 +15,7 @@
     You should have received a copy of the GNU Affero General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 --%>
-
+<%@ include file="security.jspf" %>
 <%@ include file="datevalidate.jspf" %>
 <%
     request.setAttribute("toolname", "Image contribution surveyor");
@@ -25,35 +25,25 @@
     Wiki wiki = Wiki.newSession(homewiki);
 
     ContributionSurveyor surveyor = new ContributionSurveyor(wiki);
-    String[][] survey = null;
+    List<String> surveydata = null;
     if (user != null)
-    {
-        Wiki.User wpuser = wiki.getUser(user);
-        if (wpuser != null)
-        {
-            // get results
-            request.setAttribute("contenttype", "text");
-            surveyor.setDateRange(earliest_odt, latest_odt);
-            survey = surveyor.imageContributionSurvey(wpuser);
-        }
-    }
+        request.setAttribute("contenttype", "text");
 %>
 <%@ include file="header.jspf" %>
 <%
-    if (survey != null)
+    if (user != null)
     {
+        surveyor.setDateRange(earliest_odt, latest_odt);
+        surveydata = surveyor.outputContributionSurvey(List.of(user), false, false, true);
+
+        String footer = "Survey URL: " + request.getRequestURL() + "?" + request.getQueryString();
+        // TODO: output as ZIP
+        for (int i = 0; i < surveydata.size(); i++)
+            surveydata.set(i, surveydata.get(i) + footer);
+            
         response.setHeader("Content-Disposition", "attachment; filename=" 
             + URLEncoder.encode(user, StandardCharsets.UTF_8) + ".txt");
-        out.print(Users.generateWikitextSummaryLinks(user));
-        out.println();        
-        for (int i = 0; i < survey[0].length; i += 20)
-            out.println(surveyor.outputNextSection(null, "Local files", survey[0], i));
-        for (int i = 0; i < survey[1].length; i += 20)
-            out.println(surveyor.outputNextSection(null, "Commons files", survey[1], i));
-        for (int i = 0; i < survey[2].length; i += 20)
-            out.println(surveyor.outputNextSection(null, "Transferred files", survey[2], i));
-        out.print(surveyor.generateWikitextFooter());
-        out.println("Survey URL: " + request.getRequestURL() + "?" + request.getQueryString());
+        out.print(String.join("\n", surveydata));
         return;
     }
 %>
@@ -80,7 +70,7 @@ href="//en.wikipedia.org/wiki/WP:CCI">Contributor copyright investigations.</a>
 </form>
 
 <%
-    if (user != null && survey == null)
+    if (user != null && surveydata.isEmpty())
         request.setAttribute("error", "ERROR: User " + ServletUtils.sanitizeForHTML(user) + " does not exist!");
 %>
 <%@ include file="footer.jspf" %>

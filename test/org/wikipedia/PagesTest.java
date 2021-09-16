@@ -20,6 +20,7 @@
 package org.wikipedia;
 
 import java.util.*;
+import java.util.function.*;
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -49,11 +50,19 @@ public class PagesTest
         List<String> articles = List.of("File:Example.png", "Main Page",
             "Category:Example", "*-algebra");
 
-        String expected = "*[[:File:Example.png]]\n*[[:Main Page]]\n"
-            + "*[[:Category:Example]]\n*[[:*-algebra]]\n";
+        String expected = """
+            *[[:File:Example.png]]
+            *[[:Main Page]]
+            *[[:Category:Example]]
+            *[[:*-algebra]]
+            """;
         assertEquals(expected, Pages.toWikitextList(articles, Pages.LIST_OF_LINKS, false), "unnumbered list");
-        expected = "#[[:File:Example.png]]\n#[[:Main Page]]\n#[[:Category:Example]]\n"
-            + "#[[:*-algebra]]\n";
+        expected = """
+            #[[:File:Example.png]]
+            #[[:Main Page]]
+            #[[:Category:Example]]
+            #[[:*-algebra]]
+            """;
         assertEquals(expected, Pages.toWikitextList(articles, Pages.LIST_OF_LINKS, true), "numbered list");
 
         articles = List.of("example.com", "example.net");
@@ -69,21 +78,24 @@ public class PagesTest
     {
         // Again, wiki-markup breaking titles should not make it to this method
         // though it is able to tolerate some abuse
-        String list =
-            "*[[:File:Example.png]]\n" +
-            "*[[Main Page]] -- annotation with extra [[wikilink|and description]]\n" +
-            "*[[*-algebra]]\n" +
-            "*:Not a list item.\n" +
-            "*[[Cape Town#Economy]]\n" +
-            "**[[Nested list]]\n" +
-            "*[[Link|Description]]" +
-            "*[[Invalid wiki markup instance #1\n" +
-            "*Not a link]]";
+        String list ="""
+            *[[:File:Example.png]]
+            *[[Main Page]] -- annotation with extra [[wikilink|and description]]
+            *[[*-algebra]]
+            *:Not a list item.
+            *[[Cape Town#Economy]]
+            **[[Nested list]]
+            *[[Link|Description]]
+            *[[Invalid wiki markup instance #1
+            *Not a link]]""";
         List<String> expected = List.of("File:Example.png", "Main Page",
             "*-algebra", "Cape Town#Economy", "Nested list", "Link");
         assertEquals(expected, Pages.parseWikitextList(list), "unnumbered list");
 
-        list = "#[[:File:Example.png]]\n#[[*-algebra]]\n#[[Cape Town#Economy]]";
+        list = """
+            #[[:File:Example.png]]
+            #[[*-algebra]]
+            #[[Cape Town#Economy]]""";
         expected = List.of("File:Example.png", "*-algebra", "Cape Town#Economy");
         assertEquals(expected, Pages.parseWikitextList(list), "numbered list");
     }
@@ -92,18 +104,62 @@ public class PagesTest
     public void parseWikitextTemplateList()
     {
         // Remember, don't attempt to parse meta-templates.
-        String list =
-            "*{{la|Test}}\n" +
-            "*{{la|Test2}} - stuff\n" +
-            "*:Not a list item\n" +
-            "*{{ la | Test3 }}\n" +
-            "*{{template|Test4}}\n" +
-            "*{{la|1=Test5}}\n" +
-            "*{{la|x=Test6}}\n" +
-            "{{la}}";
+        String list = """
+            *{{la|Test}}
+            *{{la|Test2}} - stuff
+            *:Not a list item
+            *{{ la | Test3 }}
+            *{{template|Test4}}
+            *{{la|1=Test5}}
+            *{{la|x=Test6}}
+            {{la}}""";
         List<String> expected = List.of("Test", "Test2", "Test3", "Test5", 
             "Test6", "");
         assertEquals(expected, Pages.parseWikitextTemplateList(list, "la"));
+    }
+    
+    @Test
+    public void toWikitextPaginatedList()
+    {
+        BiFunction<Integer, Integer, String> paginator = (start, end) -> "==Blah " 
+            + start + " to " + end + "==";
+
+        assertThrows(IllegalArgumentException.class,
+            () -> Pages.toWikitextPaginatedList(List.of("x"), Pages.LIST_OF_LINKS, paginator, -1, true));
+        
+        List<String> output = Pages.toWikitextPaginatedList(Collections.EMPTY_LIST, Pages.LIST_OF_LINKS, paginator, 4, true);
+        assertTrue(output.isEmpty());
+                
+        List<String> items = new ArrayList<>();
+        for (int i = 1; i < 11; i++)
+            items.add("" + i);
+        output = Pages.toWikitextPaginatedList(items, Pages.LIST_OF_LINKS, paginator, 4, true);
+        assertEquals(3, output.size());
+        String expected = """
+            ==Blah 1 to 4==
+            #[[:1]]
+            #[[:2]]
+            #[[:3]]
+            #[[:4]]
+
+            """;
+        assertEquals(expected, output.get(0));
+        expected = """
+            ==Blah 5 to 8==
+            #[[:5]]
+            #[[:6]]
+            #[[:7]]
+            #[[:8]]
+
+            """;
+        assertEquals(expected, output.get(1));
+        expected = """
+            ==Blah 9 to 10==
+            #[[:9]]
+            #[[:10]]
+
+            """;
+        assertEquals(expected, output.get(2));
     }
     
     @Test

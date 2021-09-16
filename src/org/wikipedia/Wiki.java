@@ -751,6 +751,7 @@ public class Wiki implements Comparable<Wiki>
             getparams.put("meta", "siteinfo");
             getparams.put("siprop", "namespaces|namespacealiases|general|extensions");
             String line = makeApiCall(getparams, null, "getSiteInfo");
+            detectUncheckedErrors(line, null, null);
 
             // general site info
             String bits = line.substring(line.indexOf("<general "), line.indexOf("</general>"));
@@ -905,7 +906,9 @@ public class Wiki implements Comparable<Wiki>
      *  Enables/disables GZip compression for GET requests. Default: true.
      *  @param zipped whether we use GZip compression
      *  @since 0.23
+     *  @deprecated this is now handled transparently; just delete calls to this method.
      */
+    @Deprecated(forRemoval=true)
     public void setUsingCompressedRequests(boolean zipped)
     {
         this.zipped = zipped;
@@ -916,7 +919,9 @@ public class Wiki implements Comparable<Wiki>
      *  Default: true.
      *  @return (see above)
      *  @since 0.23
+     *  @deprecated this is now handled transparently; just delete calls to this method.
      */
+    @Deprecated(forRemoval=true)
     public boolean isUsingCompressedRequests()
     {
         return zipped;
@@ -1184,6 +1189,7 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("lgpassword", new String(password));
         postparams.put("lgtoken", getToken("login"));
         String line = makeApiCall(getparams, postparams, "login");
+        detectUncheckedErrors(line, null, null);
         Arrays.fill(password, '0');
 
         // check for success
@@ -1259,7 +1265,8 @@ public class Wiki implements Comparable<Wiki>
     {
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "logout");
-        makeApiCall(getparams, null, "logoutServerSide");
+        String response = makeApiCall(getparams, null, "logoutServerSide");
+        detectUncheckedErrors(response, null, null);
         logout(); // destroy local cookies
     }
 
@@ -1276,7 +1283,9 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("action", "query");
         getparams.put("meta", "userinfo");
         getparams.put("uiprop", "hasmsg");
-        return makeApiCall(getparams, null, "hasNewMessages").contains("messages=\"\"");
+        String response = makeApiCall(getparams, null, "hasNewMessages");
+        detectUncheckedErrors(response, null, null);
+        return response.contains("messages=\"\"");
     }
 
     /**
@@ -1303,6 +1312,7 @@ public class Wiki implements Comparable<Wiki>
             int temp = getMaxLag();
             setMaxLag(-1);
             String line = makeApiCall(getparams, null, "getCurrentDatabaseLag");
+            detectUncheckedErrors(line, null, null);
             setMaxLag(temp);
     
             String lag = parseAttribute(line, "lag", 0);
@@ -1328,6 +1338,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("meta", "siteinfo");
         getparams.put("siprop", "statistics");
         String text = makeApiCall(getparams, null, "getSiteStatistics");
+        detectUncheckedErrors(text, null, null);
         Map<String, Integer> ret = new HashMap<>(20);
         ret.put("pages", Integer.parseInt(parseAttribute(text, "pages", 0)));
         ret.put("articles", Integer.parseInt(parseAttribute(text, "articles", 0)));
@@ -1423,9 +1434,15 @@ public class Wiki implements Comparable<Wiki>
         if (section >= 0)
             getparams.put("section", String.valueOf(section));
 
-        try
+        String response = makeApiCall(getparams, postparams, "parse");
+        Consumer<String> noop = desc -> {};
+        Map<String, Consumer<String>> warnings = Map.of(
+            "missingtitle", noop,
+            "missingcontent", noop,
+            "nosuchsection", noop,
+            "nosuchrevid", noop);
+        if (detectUncheckedErrors(response, null, warnings))
         {
-            String response = makeApiCall(getparams, postparams, "parse");
             int y = response.indexOf('>', response.indexOf("<text")) + 1;
             int z = response.indexOf("</text>");
 
@@ -1436,21 +1453,7 @@ public class Wiki implements Comparable<Wiki>
             html = html.replace(" src=\"//", " src=\"" + protocol); // a little fragile for my liking, but will do
             return html;
         }
-        catch (UnknownError e)
-        {
-            // Bad section numbers, revids, deleted pages should all end up here.
-            String error = parseAttribute(e.getMessage(), "code", 0);
-            switch (error)
-            {
-                case "missingtitle":
-                case "missingcontent":
-                case "nosuchsection":
-                case "nosuchrevid":
-                    return null;
-                default:
-                    throw e;
-            }
-        }
+        return null;
     }
 
     /**
@@ -1480,6 +1483,7 @@ public class Wiki implements Comparable<Wiki>
         if (ns[0] != ALL_NAMESPACES)
             getparams.put("rnnamespace", constructNamespaceString(ns));
         String line = makeApiCall(getparams, null, "random");
+        detectUncheckedErrors(line, null, null);
         return parseAttribute(line, "title", 0);
     }
 
@@ -1498,13 +1502,15 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("meta", "tokens");
         getparams.put("type", type);
         String content = makeApiCall(getparams, null, "getToken");
+        detectUncheckedErrors(content, null, null);
         return parseAttribute(content, type + "token", 0);
     }
 
     // PAGE METHODS
 
     /**
-     *  Returns the corresponding talk page to this page.
+     *  Returns the corresponding talk page to this page. Inverse of 
+     *  {@link Wiki#getContentPage}.
      *
      *  @param title the page title
      *  @return the name of the talk page corresponding to <var>title</var>
@@ -1513,6 +1519,7 @@ public class Wiki implements Comparable<Wiki>
      *  or we try to retrieve the talk page of a Special: or Media: page.
      *  @throws UncheckedIOException if the namespace cache has not been
      *  populated, and a network error occurs when populating it
+     *  @see #getContentPage(String)
      *  @since 0.10
      */
     public String getTalkPage(String title)
@@ -1527,6 +1534,34 @@ public class Wiki implements Comparable<Wiki>
         if (namespace != MAIN_NAMESPACE) // remove the namespace
             title = title.substring(title.indexOf(':') + 1);
         return namespaceIdentifier(namespace + 1) + ":" + title;
+    }
+    
+    /**
+     *  Returns the corresponding content page associated with this talk page.
+     *  Inverse of {@link Wiki#getTalkPage}.
+     *
+     *  @param title the page title
+     *  @return the name of the corresponding page corresponding to <var>title</var>
+     *  @throws IllegalArgumentException if given title is in a content namespace
+     *  or we try to retrieve the content page of a Special: or Media: page.
+     *  @throws UncheckedIOException if the namespace cache has not been
+     *  populated, and a network error occurs when populating it
+     *  @see #getTalkPage(String) 
+     *  @since 0.37
+     */
+    public String getContentPage(String title)
+    {
+        // It is convention that talk namespaces are the original namespace + 1
+        // and are odd integers.
+        int namespace = namespace(title);
+        if (namespace % 2 == 0)
+            throw new IllegalArgumentException("Cannot fetch content page of a content page!");
+        if (namespace < 0)
+            throw new IllegalArgumentException("Special: and Media: pages do not have talk pages!");
+        title = title.substring(title.indexOf(':') + 1);
+        if (namespace == TALK_NAMESPACE)
+            return title;
+        return namespaceIdentifier(namespace - 1) + ":" + title;
     }
 
     /**
@@ -1614,20 +1649,6 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets miscellaneous page info.
-     *  @param page the page to get info for
-     *  @return see {@link #getPageInfo(List)}
-     *  @throws IOException if a network error occurs
-     *  @since 0.28
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public Map<String, Object> getPageInfo(String page) throws IOException
-    {
-        return getPageInfo(List.of(page)).get(0);
-    }
-
-    /**
      *  Gets miscellaneous page info. Returns:
      *  <ul>
      *  <li><b>inputpagename</b>: (String) the page name supplied to this method
@@ -1675,6 +1696,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", temp);
             String line = makeApiCall(getparams, postparams, "getPageInfo");
+            detectUncheckedErrors(line, null, null);
             resolveNormalizedParser(pages2, line);
             if (resolveredirect)
                 resolveRedirectParser(pages2, line);
@@ -1895,26 +1917,6 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets the raw wikicode for a page. WARNING: does not support special
-     *  pages. Check [[User talk:MER-C/Wiki.java#Special page equivalents]]
-     *  for fetching the contents of special pages. Use {@link #getImage(String,
-     *  File)} to fetch an image.
-     *
-     *  @param title the title of the page.
-     *  @return the raw wikicode of a page, or {@code null} if the page doesn't exist
-     *  @throws UnsupportedOperationException if you try to retrieve the text of
-     *  a Special: or Media: page
-     *  @throws IOException or UncheckedIOException if a network error occurs
-     *  @see #edit
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String getPageText(String title) throws IOException
-    {
-        return getPageText(List.of(title)).get(0);
-    }
-
-    /**
      *  Gets the raw wikicode for a set of pages. WARNING: does not support
      *  special pages. Check [[User talk:MER-C/Wiki.java#Special page equivalents]]
      *  for fetching the contents of special pages. Use {@link #getImage(String,
@@ -1992,6 +1994,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put(isrevisions ? "revids" : "titles", chunk);
             String temp = makeApiCall(getparams, postparams, "getText");
+            detectUncheckedErrors(temp, null, Map.of("nosuchsection", desc -> {}));
             String[] results = temp.split(isrevisions ? "<rev " : "<page ");
             if (!isrevisions)
             {
@@ -2025,7 +2028,7 @@ public class Wiki implements Comparable<Wiki>
             String key = isrevisions ? String.valueOf(revids[i]) : titles2.get(i);
             ret[i] = pageTexts.get(key);
         }
-        log(Level.INFO, "getPageText", "Successfully retrieved text of " + count + (isrevisions ? " revisions." : " pages."));
+        log(Level.INFO, "getText", "Successfully retrieved text of " + count + (isrevisions ? " revisions." : " pages."));
         return Arrays.asList(ret);
     }
 
@@ -2205,13 +2208,10 @@ public class Wiki implements Comparable<Wiki>
     public synchronized void edit(String title, String text, String summary, boolean minor, boolean bot,
         int section, OffsetDateTime basetime) throws IOException, LoginException
     {
-        // @revised 0.16 to use API edit. No more screenscraping - yay!
-        // @revised 0.17 section editing
-        // @revised 0.25 optional bot flagging
         throttle();
 
         // protection
-        Map<String, Object> info = getPageInfo(title);
+        Map<String, Object> info = getPageInfo(List.of(title)).get(0);
         if (!checkRights(info, "edit") || (Boolean)info.get("exists") && !checkRights(info, "create"))
         {
             CredentialException ex = new CredentialException("Permission denied: page is protected.");
@@ -2247,12 +2247,10 @@ public class Wiki implements Comparable<Wiki>
         }
         else if (section != -2)
             postparams.put("section", section);
+        
         String response = makeApiCall(getparams, postparams, "edit");
-
-        // done
-        if (response.contains("error code=\"editconflict\""))
-            throw new ConcurrentModificationException("Edit conflict on " + title);
-        checkErrorsAndUpdateStatus(response, "edit");
+        checkErrorsAndUpdateStatus(response, "edit", Map.of(
+            "editconflict", desc -> new ConcurrentModificationException(desc + "- [[" + title + "]]")), null);
         log(Level.INFO, "edit", "Successfully edited " + title);
     }
 
@@ -2330,7 +2328,7 @@ public class Wiki implements Comparable<Wiki>
         throttle();
 
         // edit token
-        Map<String, Object> info = getPageInfo(title);
+        Map<String, Object> info = getPageInfo(List.of(title)).get(0);
         if (Boolean.FALSE.equals(info.get("exists")))
         {
             log(Level.INFO, "delete", "Page \"" + title + "\" does not exist.");
@@ -2343,11 +2341,9 @@ public class Wiki implements Comparable<Wiki>
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
+        
         String response = makeApiCall(getparams, postparams, "delete");
-
-        // done
-        if (!response.contains("<delete title="))
-            checkErrorsAndUpdateStatus(response, "delete");
+        checkErrorsAndUpdateStatus(response, "delete", null, null);
         log(Level.INFO, "delete", "Successfully deleted " + title);
     }
 
@@ -2389,18 +2385,16 @@ public class Wiki implements Comparable<Wiki>
                 sj.add(revision.getTimestamp().withOffsetSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
             postparams.put("timestamps", sj.toString());
         }
+        
         String response = makeApiCall(getparams, postparams, "undelete");
-
-        // done
-        checkErrorsAndUpdateStatus(response, "undelete");
-        if (response.contains("cantundelete"))
+        Map<String, Consumer<String>> info = Map.of(
+            "cantundelete", desc -> log(Level.WARNING, "undelete", desc + " Page = [[" + title + "]]"));
+        if (checkErrorsAndUpdateStatus(response, "undelete", null, info))
         {
-            log(Level.WARNING, "undelete", "Can't undelete: " + title + " has no deleted revisions.");
-            return;
+            log(Level.INFO, "undelete", "Successfully undeleted " + title);
+            for (Revision rev : revisions)
+                rev.pageDeleted = false;
         }
-        log(Level.INFO, "undelete", "Successfully undeleted " + title);
-        for (Revision rev : revisions)
-            rev.pageDeleted = false;
     }
 
     /**
@@ -2420,25 +2414,10 @@ public class Wiki implements Comparable<Wiki>
         for (String x : constructTitleString(List.of(titles)))
         {
             postparams.put("title", x);
-            makeApiCall(getparams, postparams, "purge");
+            String response = makeApiCall(getparams, postparams, "purge");
+            detectUncheckedErrors(response, null, null);
         }
         log(Level.INFO, "purge", "Successfully purged " + titles.length + " pages.");
-    }
-
-    /**
-     *  Gets the list of images used on a particular page. If there are
-     *  redirected images, both the source and target page are included.
-     *
-     *  @param title a page
-     *  @return the list of images used in the page.
-     *  @throws IOException if a network error occurs
-     *  @since 0.16
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String[] getImagesOnPage(String title) throws IOException
-    {
-        return getImagesOnPage(List.of(title)).get(0).toArray(String[]::new);
     }
 
     /**
@@ -2465,22 +2444,6 @@ public class Wiki implements Comparable<Wiki>
         });
         log(Level.INFO, "getImagesOnPage", "Successfully retrieved images used on " + titles.size() + " pages.");
         return ret;
-    }
-
-    /**
-     *  Gets the list of categories a particular page is in. Includes hidden
-     *  categories.
-     *
-     *  @param title a page
-     *  @return the list of categories that page is in
-     *  @throws IOException if a network error occurs
-     *  @since 0.16
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String[] getCategories(String title) throws IOException
-    {
-        return getCategories(List.of(title), null, false).get(0).toArray(String[]::new);
     }
 
     /**
@@ -2531,24 +2494,6 @@ public class Wiki implements Comparable<Wiki>
         });
         log(Level.INFO, "getCategories", "Successfully retrieved categories used on " + titles.size() + " pages.");
         return ret;
-    }
-
-    /**
-     *  Gets the list of templates used on a particular page that are in a
-     *  particular namespace(s).
-     *
-     *  @param title a page
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return the list of templates used on that page in that namespace
-     *  @throws IOException if a network error occurs
-     *  @since 0.16
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String[] getTemplates(String title, int... ns) throws IOException
-    {
-        List<String> temp = getTemplates(List.of(title), ns).get(0);
-        return temp.toArray(String[]::new);
     }
 
     /**
@@ -2620,24 +2565,6 @@ public class Wiki implements Comparable<Wiki>
         return ret;
     }
 
-    /**
-     *  Gets the list of interwiki links a particular page has. The returned
-     *  map has the format { language code : the page on the external wiki
-     *  linked to }.
-     *
-     *  @param title a page
-     *  @return a map of interwiki links that page has (empty if there are no
-     *  links)
-     *  @throws IOException if a network error occurs
-     *  @deprecated this trampoline is going away
-     *  @since 0.18
-     */
-    @Deprecated(forRemoval=true)
-    public Map<String, String> getInterWikiLinks(String title) throws IOException
-    {
-        return getInterWikiLinks(List.of(title)).get(0);
-    }
-    
     /**
      *  Gets the list of interwiki links a particular page has. The returned
      *  map has the format { language code : the page on the external wiki
@@ -2738,22 +2665,6 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets the list of external links used on a particular page.
-     *
-     *  @param title a page
-     *  @return the list of external links used in the page
-     *  @throws IOException if a network error occurs
-     *  @since 0.29
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String[] getExternalLinksOnPage(String title) throws IOException
-    {
-        List<String> temp = getExternalLinksOnPage(List.of(title)).get(0);
-        return temp.toArray(String[]::new);
-    }
-
-    /**
      *  Gets the list of external links used on a list of pages. The return list
      *  contains results that correspond to the list of input titles, element wise.
      *
@@ -2811,6 +2722,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("prop", "sections");
         getparams.put("text", "{{:" + normalize(page) + "}}__TOC__");
         String line = makeApiCall(getparams, null, "getSectionMap");
+        detectUncheckedErrors(line, null, null);
 
         // xml form: <s toclevel="1" level="2" line="How to nominate" number="1" />
         LinkedHashMap<String, String> map = new LinkedHashMap<>(30);
@@ -2845,6 +2757,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("titles", normalize(title));
         getparams.put("rvprop", "timestamp|user|ids|flags|size|comment|parsedcomment|sha1|tags");
         String line = makeApiCall(getparams, null, "getTopRevision");
+        detectUncheckedErrors(line, null, null);
         int a = line.indexOf("<rev "); // important space
         int b = line.indexOf("</rev>", a);
         if (a < 0) // page does not exist
@@ -2874,26 +2787,12 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("titles", normalize(title));
         getparams.put("rvprop", "timestamp|user|ids|flags|size|comment|parsedcomment|sha1|tags");
         String line = makeApiCall(getparams, null, "getFirstRevision");
+        detectUncheckedErrors(line, null, null);
         int a = line.indexOf("<rev "); // important space!
         int b = line.indexOf("</rev>", a);
         if (a < 0) // page does not exist
             return null;
         return parseRevision(line.substring(a, b), title);
-    }
-
-    /**
-     *  Gets the newest page name or the name of a page where the asked page
-     *  redirects.
-     *  @param title a title
-     *  @return the page redirected to or {@code null} if not a redirect
-     *  @throws IOException if a network error occurs
-     *  @since 0.29
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String resolveRedirect(String title) throws IOException
-    {
-        return resolveRedirects(List.of(title)).get(0);
     }
 
     /**
@@ -2918,6 +2817,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", blah);
             String line = makeApiCall(getparams, postparams, "resolveRedirects");
+            detectUncheckedErrors(line, null, null);
             resolveNormalizedParser(ret, line);
             resolveRedirectParser(ret, line);
         }
@@ -3183,6 +3083,7 @@ public class Wiki implements Comparable<Wiki>
         Map<String, String> getparams = new HashMap<>();
         getparams.put("list", "alldeletedrevisions");
         getparams.put("adrprop", "ids|user|flags|size|comment|parsedcomment|timestamp|sha1|tags");
+        getparams.put("adruser", username);
         if (helper != null)
         {
             helper.setRequestType("adr");
@@ -3279,6 +3180,7 @@ public class Wiki implements Comparable<Wiki>
 
         // expected form: <rev timestamp="2009-04-05T22:40:35Z" xml:space="preserve">TEXT OF PAGE</rev>
         String line = makeApiCall(getparams, null, "getDeletedText");
+        detectUncheckedErrors(line, null, null);
         int a = line.indexOf("<rev ");
         if (a < 0)
             return null;
@@ -3342,7 +3244,7 @@ public class Wiki implements Comparable<Wiki>
         throttle();
 
         // protection and token
-        Map<String, Object> info = getPageInfo(title);
+        Map<String, Object> info = getPageInfo(List.of(title)).get(0);
         // determine whether the page exists
         if (Boolean.FALSE.equals(info.get("exists")))
             throw new IllegalArgumentException("Tried to move a non-existant page!");
@@ -3367,11 +3269,9 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("noredirect", "1");
         if (movesubpages && user.isAllowedTo("move-subpages"))
             postparams.put("movesubpages", "1");
+        
         String response = makeApiCall(getparams, postparams, "move");
-
-        // done
-        if (!response.contains("move from"))
-            checkErrorsAndUpdateStatus(response, "move");
+        checkErrorsAndUpdateStatus(response, "move", null, null);
         log(Level.INFO, "move", "Successfully moved " + title + " to " + newTitle);
     }
 
@@ -3441,11 +3341,9 @@ public class Wiki implements Comparable<Wiki>
         exp.delete(exp.length() - 1, exp.length());
         postparams.put("protections", pro);
         postparams.put("expiry", exp);
+        
         String response = makeApiCall(getparams, postparams, "protect");
-
-        // done
-        if (!response.contains("<protect "))
-            checkErrorsAndUpdateStatus(response, "protect");
+        checkErrorsAndUpdateStatus(response, "protect", null, null);
         log(Level.INFO, "edit", "Successfully protected " + page);
     }
 
@@ -3486,7 +3384,9 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("export", "");
         getparams.put("exportnowrap", "");
         getparams.put("titles", normalize(title));
-        return makeApiCall(getparams, null, "export");
+        String response = makeApiCall(getparams, null, "export");
+        detectUncheckedErrors(response, null, null);
+        return response;
     }
 
     // REVISION METHODS
@@ -3532,6 +3432,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("revids", chunk);
             String line = makeApiCall(getparams, postparams, "getRevision");
+            detectUncheckedErrors(line, null, null);
 
             for (int i = line.indexOf("<page "); i > 0; i = line.indexOf("<page ", ++i))
             {
@@ -3615,19 +3516,14 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("markbot", "1");
         if (!reason.isEmpty())
             postparams.put("summary", reason);
-        String response = makeApiCall(getparams, postparams, "rollback");
 
-        // done
-        // ignorable errors
-        if (response.contains("alreadyrolled"))
-            log(Level.INFO, "rollback", "Edit has already been rolled back or cannot be "
-                + "rolled back due to intervening edits.");
-        else if (response.contains("onlyauthor"))
-            log(Level.INFO, "rollback", "Cannot rollback as the page only has one author.");
-        // probably not ignorable (otherwise success)
-        else if (!response.contains("rollback title="))
-            checkErrorsAndUpdateStatus(response, "rollback");
-        log(Level.INFO, "rollback", "Successfully reverted edits by " + user + " on " + revision.getTitle());
+        String response = makeApiCall(getparams, postparams, "rollback");
+        Map<String, Consumer<String>> info = Map.of(
+            "alreadyrolled", desc -> log(Level.INFO, "rollback", 
+                "Edit has already been rolled back or cannot be rolled back due to intervening edits."),
+            "onlyauthor", desc -> log(Level.INFO, "rollback", desc));
+        if (checkErrorsAndUpdateStatus(response, "rollback", null, info))
+            log(Level.INFO, "rollback", "Successfully reverted edits by " + user + " on " + revision.getTitle());
     }
 
     /**
@@ -3719,9 +3615,7 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("token", getToken("csrf"));
             postparams.put("ids", revstring);
             String response = makeApiCall(getparams, postparams, "revisionDelete");
-
-            if (!response.contains("<revisiondelete "))
-                checkErrorsAndUpdateStatus(response, "revisionDelete");
+            checkErrorsAndUpdateStatus(response, "revisionDelete", null, null);
             for (Event event : events)
             {
                 if (hideuser != null)
@@ -3732,7 +3626,6 @@ public class Wiki implements Comparable<Wiki>
                     event.setContentDeleted(hidecontent);
             }
         }
-
         log(Level.INFO, "revisionDelete", "Successfully (un)deleted " + events.size() + " events.");
     }
 
@@ -3784,7 +3677,7 @@ public class Wiki implements Comparable<Wiki>
             throw new IllegalArgumentException("Cannot undo - the revisions supplied are not on the same page!");
 
         // protection
-        Map<String, Object> info = getPageInfo(rev.getTitle());
+        Map<String, Object> info = getPageInfo(List.of(rev.getTitle())).get(0);
         if (!checkRights(info, "edit"))
         {
             CredentialException ex = new CredentialException("Permission denied: page is protected.");
@@ -3808,13 +3701,10 @@ public class Wiki implements Comparable<Wiki>
         if (bot)
             postparams.put("bot", "1");
         postparams.put("token", getToken("csrf"));
+        
         String response = makeApiCall(getparams, postparams, "undo");
-
-        // done
-        if (response.contains("error code=\"editconflict\""))
-            throw new ConcurrentModificationException("Edit conflict on " + rev.getTitle());
-        checkErrorsAndUpdateStatus(response, "undo");
-
+        checkErrorsAndUpdateStatus(response, "edit", Map.of(
+            "editconflict", desc -> new ConcurrentModificationException(desc + "- [[" + rev.getTitle() + "]]")), null);
         String log = "Successfully undid revision(s) " + rev.getID();
         if (to != null)
             log += (" - " + to.getID());
@@ -3918,10 +3808,15 @@ public class Wiki implements Comparable<Wiki>
                 throw new IllegalArgumentException("To content not specified!");
         }
 
-        try
+        String line = makeApiCall(getparams, postparams, "diff");
+        Consumer<String> noop = desc -> {};
+        Map<String, Consumer<String>> warnings = Map.of(
+            "missingtitle", noop,
+            "missingcontent", noop,
+            "nosuchsection", noop,
+            "nosuchrevid", noop);
+        if (detectUncheckedErrors(line, null, warnings))
         {
-            String line = makeApiCall(getparams, postparams, "diff");
-
             // strip extraneous information
             if (line.contains("</compare>"))
             {
@@ -3942,22 +3837,7 @@ public class Wiki implements Comparable<Wiki>
             else
                 throw new AssertionError("Unreachable.");
         }
-        catch (UnknownError e)
-        {
-            // Bad section numbers, revids, deleted pages should all end up here.
-            String error = parseAttribute(e.getMessage(), "code", 0);
-            switch (error)
-            {
-                case "missingtitle":
-                case "missingcontent":
-                case "nosuchfromsection":
-                case "nosuchtosection":
-                case "nosuchrevid":
-                    return null;
-                default:
-                    throw e;
-            }
-        }
+        return null;
     }
 
     /**
@@ -4101,6 +3981,7 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("iiurlwidth", String.valueOf(width));
         getparams.put("iiurlheight", String.valueOf(height));
         String line = makeApiCall(getparams, null, "getImage");
+        detectUncheckedErrors(line, null, null);
         if (!line.contains("<imageinfo>"))
             return false;
         String url2 = parseAttribute(line, "url", 0);
@@ -4177,6 +4058,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", chunk);            
             String line = makeApiCall(getparams, postparams, "getFileMetadata");
+            detectUncheckedErrors(line, null, null);
             resolveNormalizedParser(files2, line);
             if (resolveredirect)
                 resolveRedirectParser(files2, line);
@@ -4322,7 +4204,8 @@ public class Wiki implements Comparable<Wiki>
         getparams.put("iiprop", "timestamp|url|archivename");
         getparams.put("titles", normalize(entry.getTitle()));
         String line = makeApiCall(getparams, null, "getOldImage");
-
+        detectUncheckedErrors(line, null, null);
+        
         // find the correct log entry by comparing timestamps
         // xml form: <ii timestamp="2010-05-23T05:48:43Z" user="Prodego" comment="Match to new version" />
         for (int a = line.indexOf("<ii "); a > 0; a = line.indexOf("<ii ", ++a))
@@ -4435,7 +4318,7 @@ public class Wiki implements Comparable<Wiki>
         throttle();
 
         // protection
-        Map<String, Object> info = getPageInfo("File:" + filename);
+        Map<String, Object> info = getPageInfo(List.of("File:" + filename)).get(0);
         if (!checkRights(info, "upload"))
         {
             CredentialException ex = new CredentialException("Permission denied: page is protected.");
@@ -4485,28 +4368,16 @@ public class Wiki implements Comparable<Wiki>
                     postparams.put("chunk\"; filename=\"" + file.getName(), by);
                 }
 
-                // done
                 String response = makeApiCall(getparams, postparams, "upload");
-
+                checkErrorsAndUpdateStatus(response, "upload", null, null);
                 // look for filekey
                 if (chunks > 1)
                 {
                     if (response.contains("filekey=\""))
-                    {
                         filekey = parseAttribute(response, "filekey", 0);
-                        continue;
-                    }
                     else
                         throw new IOException("No filekey present! Server response was " + response);
                 }
-                // TODO: check for more specific errors here
-                if (response.contains("error code=\"fileexists-shared-forbidden\""))
-                {
-                    CredentialException ex = new CredentialException("Cannot overwrite file hosted on central repository.");
-                    log(Level.WARNING, "upload", "Cannot upload - permission denied." + ex);
-                    throw ex;
-                }
-                checkErrorsAndUpdateStatus(response, "upload");
             }
         }
 
@@ -4522,7 +4393,7 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("ignorewarnings", "true");
             postparams.put("filekey", filekey);
             String response = makeApiCall(getparams, postparams, "upload");
-            checkErrorsAndUpdateStatus(response, "upload");
+            checkErrorsAndUpdateStatus(response, "upload", null, null);
         }
         log(Level.INFO, "upload", "Successfully uploaded to File:" + filename + ".");
     }
@@ -4556,7 +4427,7 @@ public class Wiki implements Comparable<Wiki>
         throttle();
 
         // protection
-        Map<String, Object> info = getPageInfo("File:" + filename);
+        Map<String, Object> info = getPageInfo(List.of("File:" + filename)).get(0);
         if (!checkRights(info, "upload"))
         {
             CredentialException ex = new CredentialException("Permission denied: page is protected.");
@@ -4574,26 +4445,9 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("text", contents);
         postparams.put("comment", reason);
         postparams.put("url", url.toExternalForm());
+        
         String response = makeApiCall(getparams, postparams, "upload");
-
-        if (response.contains("error code=\"fileexists-shared-forbidden\""))
-        {
-            CredentialException ex = new CredentialException("Cannot overwrite file hosted on central repository.");
-            log(Level.WARNING, "upload", "Cannot upload - permission denied." + ex);
-            throw ex;
-        }
-        if (response.contains("error code=\"copyuploadbaddomain\""))
-        {
-            AccessDeniedException ex = new AccessDeniedException("Uploads by URL are not allowed from " + url.getHost());
-            log(Level.WARNING, "upload", "Cannot upload from given URL");
-            throw ex;
-        }
-        if (response.contains("error code=\"http-bad-status\""))
-        {
-            log(Level.WARNING, "upload", "Server-side network error when fetching image.");
-            throw new IOException("Server-side network error when fetching image: " + response);
-        }
-        checkErrorsAndUpdateStatus(response, "upload");
+        checkErrorsAndUpdateStatus(response, "upload", null, null);
         log(Level.INFO, "upload", "Successfully uploaded to File:" + filename + ".");
     }
 
@@ -4747,7 +4601,8 @@ public class Wiki implements Comparable<Wiki>
             if (!next.isEmpty())
                 getparams.put("aufrom", normalize(next));
             String line = makeApiCall(getparams, null, "allUsers");
-
+            detectUncheckedErrors(line, null, null);
+            
             // bail if nonsense groups/rights
             if (line.contains("Unrecognized values for parameter"))
                 return Collections.emptyList();
@@ -4771,21 +4626,6 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Gets the user with the given username. Returns null if it doesn't
-     *  exist.
-     *  @param username a username
-     *  @return the user with that username
-     *  @since 0.05
-     *  @throws IOException if a network error occurs
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public User getUser(String username) throws IOException
-    {
-        return getUsers(List.of(username)).get(0);
-    }
-
-    /**
      *  Gets the users with the given usernames and fills all {@linkplain Wiki.User 
      *  available metadata and properties}. If a user doesn't exist, the result
      *  is {@code null}. Output array is in the same order as the input array.
@@ -4806,6 +4646,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("ususers", fragment);
             String line = makeApiCall(getparams, postparams, "getUserInfo");
+            detectUncheckedErrors(line, null, null);
             String[] results = line.split("<user ");
             for (int i = 1; i < results.length; i++)
             {
@@ -5090,12 +4931,10 @@ public class Wiki implements Comparable<Wiki>
             postparams.put("ccme", "1");
         postparams.put("text", message);
         postparams.put("subject", subject);
+        
         String response = makeApiCall(getparams, postparams, "emailUser");
-
-        // check for errors
-        checkErrorsAndUpdateStatus(response, "email");
-        if (response.contains("error code=\"cantsend\""))
-            throw new UnsupportedOperationException("Email is disabled for this wiki or you do not have a confirmed email address.");
+        checkErrorsAndUpdateStatus(response, "email",
+            Map.of("cantsend", desc -> new UnsupportedOperationException(desc)), null);
         log(Level.INFO, "emailUser", "Successfully emailed " + user.getUsername() + ".");
     }
 
@@ -5156,11 +4995,9 @@ public class Wiki implements Comparable<Wiki>
                     postparams.put(key, "1");
             });
         }
+        
         String response = makeApiCall(getparams, postparams, "block");
-
-        // done
-        if (!response.contains("<block "))
-            checkErrorsAndUpdateStatus(response, "block");
+        checkErrorsAndUpdateStatus(response, "block", null, null);
         log(Level.INFO, "block", "Successfully blocked " + user);
     }
 
@@ -5187,19 +5024,13 @@ public class Wiki implements Comparable<Wiki>
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
+        
         String response = makeApiCall(getparams, postparams, "unblock");
-
-        // done
-        if (!response.contains("<unblock "))
-            checkErrorsAndUpdateStatus(response, "unblock");
-        else if (response.contains("code=\"cantunblock\""))
-            log(Level.INFO, "unblock", blockeduser + " is not blocked.");
-        else if (response.contains("code=\"blockedasrange\""))
-        {
-            log(Level.SEVERE, "unblock", "IP " + blockeduser + " is rangeblocked.");
-            return; // throw exception?
-        }
-        log(Level.INFO, "unblock", "Successfully unblocked " + blockeduser);
+        Map<String, Consumer<String>> info = Map.of(
+            "cantunblock", desc -> log(Level.INFO, "unblock", desc),
+            "blockedasrange", desc -> log(Level.SEVERE, "unblock", desc)); // throw exception?
+        if (checkErrorsAndUpdateStatus(response, "unblock", null, info))
+            log(Level.INFO, "unblock", "Successfully unblocked " + blockeduser);
     }
 
     /**
@@ -5263,9 +5094,9 @@ public class Wiki implements Comparable<Wiki>
         postparams.put("add", granted);
         postparams.put("expiry", numexpirydates == 0 ? "indefinite" : expiry);
         postparams.put("remove", revoked);
+        
         String response = makeApiCall(getparams, postparams, "changeUserPrivileges");
-        if (!response.contains("<userrights "))
-            checkErrorsAndUpdateStatus(response, "changeUserPrivileges");
+        checkErrorsAndUpdateStatus(response, "changeUserPrivileges", null, null);
         log(Level.INFO, "changeUserPrivileges", "Successfully changed privileges of user " + u.getUsername());
     }
 
@@ -5328,7 +5159,8 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", titlestring);
             postparams.put("token", getToken("watch"));
-            makeApiCall(getparams, postparams, state);
+            String response = makeApiCall(getparams, postparams, state);
+            detectUncheckedErrors(response, null, null);
         }
         log(Level.INFO, state, "Successfully " + state + "ed " + titles.size() + " pages.");
     }
@@ -5638,23 +5470,6 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     *  Returns a list of all pages transcluding to a page within the specified
-     *  namespaces.
-     *
-     *  @param title the title of the page, e.g. "Template:Stub"
-     *  @param ns a list of namespaces to filter by, empty = all namespaces.
-     *  @return the list of pages transcluding the specified page
-     *  @throws IOException or UncheckedIOException if a netwrok error occurs
-     *  @since 0.12
-     *  @deprecated this trampoline is going away
-     */
-    @Deprecated(forRemoval = true)
-    public String[] whatTranscludesHere(String title, int... ns) throws IOException
-    {
-        return whatTranscludesHere(List.of(title), ns).get(0).toArray(String[]::new);
-    }
-
-    /**
      *  Returns lists of all pages transcluding to a page within the specified
      *  namespaces. Output order is the same as the input order.
      *
@@ -5720,6 +5535,7 @@ public class Wiki implements Comparable<Wiki>
         {
             postparams.put("titles", titlestring);
             String result = makeApiCall(getparams, postparams, "getCategoryMemberCount");
+            detectUncheckedErrors(result, null, null);
             resolveNormalizedParser(norm_cats, result);
             if (resolveredirect)
                 resolveRedirectParser(norm_cats, result);
@@ -5964,7 +5780,7 @@ public class Wiki implements Comparable<Wiki>
      *  <li>{@link Wiki.RequestHelper#limitedTo(int) local query limit}
      *  </ul>
      *
-     *  @param user a particular user that might have been blocked. Use null to
+     *  @param users a list of users that might have been blocked. Use null to
      *  not specify one. May be an IP (e.g. "127.0.0.1") or a CIDR range (e.g.
      *  "127.0.0.0/16") but not an autoblock (e.g. "#123456").
      *  @param helper a {@link Wiki.RequestHelper} (optional, use null to not
@@ -5973,7 +5789,7 @@ public class Wiki implements Comparable<Wiki>
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @since 0.12
      */
-    public List<LogEntry> getBlockList(String user, Wiki.RequestHelper helper) throws IOException
+    public List<LogEntry> getBlockList(List<String> users, Wiki.RequestHelper helper) throws IOException
     {
         int limit = -1;
         Map<String, String> getparams = new HashMap<>();
@@ -5987,11 +5803,7 @@ public class Wiki implements Comparable<Wiki>
             getparams.putAll(helper.addShowParameter());
             limit = helper.limit();
         }
-        if (user != null)
-            getparams.put("bkusers", normalize(user));
-
-        // connection
-        List<LogEntry> entries = makeListQuery("bk", getparams, null, "getBlockList", limit, (line, results) ->
+        BiConsumer<String, List<Wiki.LogEntry>> parser = (line, results) ->
         {
             // XML form: <block id="7844197" user="223.205.208.198" by="ProcseeBot"
             // timestamp="2017-09-24T07:17:08Z" expiry="2017-11-23T07:17:08Z"
@@ -6013,8 +5825,18 @@ public class Wiki implements Comparable<Wiki>
                 LogEntry le = parseLogEntry(temp, blocker, BLOCK_LOG, "block", target);
                 results.add(le);
             }
-        });
-
+        };
+        List<LogEntry> entries = new ArrayList<>();
+        if (users == null)
+            entries.addAll(makeListQuery("bk", getparams, null, "getBlockList", limit, parser));
+        else
+        {
+            for (String bkusers : constructTitleString(users))
+            {
+                getparams.put("bkusers", bkusers);
+                entries.addAll(makeListQuery("bk", getparams, null, "getBlockList", limit, parser));
+            }
+        }
         log(Level.INFO, "getBlockList", "Successfully fetched block list " + entries.size() + " entries)");
         return entries;
     }
@@ -7448,6 +7270,7 @@ public class Wiki implements Comparable<Wiki>
                 getparams.put("drvprop", "content");
                 getparams.put("revids", String.valueOf(getID()));
                 String temp = makeApiCall(getparams, null, "Revision.getText");
+                detectUncheckedErrors(temp, null, null);
                 int a = temp.indexOf("<rev ");
                 a = temp.indexOf('>', a) + 1;
                 int b = temp.indexOf("</rev>", a); // tag not present if revision has no content
@@ -8187,6 +8010,7 @@ public class Wiki implements Comparable<Wiki>
         {
             getparams.put(limitstring, String.valueOf(Math.min(limit - results.size(), max)));
             String line = makeApiCall(getparams, postparams, caller);
+            detectUncheckedErrors(line, null, null);
             getparams.keySet().removeIf(param -> param.endsWith("continue"));
 
             // Continuation parameter has form:
@@ -8357,6 +8181,7 @@ public class Wiki implements Comparable<Wiki>
                 }
 
                 HttpResponse<InputStream> hr = client.send(connection.build(), HttpResponse.BodyHandlers.ofInputStream());
+                boolean zipped_ = hr.headers().firstValue("Content-Encoding").orElse("").equals("gzip");
                 if (checkLag(hr))
                 {
                     tries++;
@@ -8364,7 +8189,7 @@ public class Wiki implements Comparable<Wiki>
                 }
 
                 try (BufferedReader in = new BufferedReader(new InputStreamReader(
-                    zipped ? new GZIPInputStream(hr.body()) : hr.body(), "UTF-8")))
+                    zipped_ ? new GZIPInputStream(hr.body()) : hr.body(), "UTF-8")))
                 {
                     response = in.lines().collect(Collectors.joining("\n"));
                 }
@@ -8404,28 +8229,6 @@ public class Wiki implements Comparable<Wiki>
         // empty response from server
         if (response.isEmpty())
             throw new UnknownError("Received empty response from server!");
-        if (response.contains("<error code="))
-        {
-            String error = parseAttribute(response, "code", 0);
-            String description = parseAttribute(response, "info", 0);
-            switch (error)
-            {
-                case "assertbotfailed":
-                case "assertuserfailed":
-                    throw new AssertionError(description);
-                case "permissiondenied":
-                    throw new SecurityException(description);
-                // Harmless, response goes to calling method. TODO: remove this.
-                case "nosuchsection":     // getSectionText()
-                case "cantundelete":      // undelete(), page has no deleted revisions
-                    break;
-                // Something *really* bad happened. Most of these are self-explanatory
-                // and are indicative of bugs (not necessarily in this framework) or
-                // can be avoided entirely. Others are kicked to the caller to handle.
-                default:
-                    throw new UnknownError("MW API error. Server response was: " + response);
-            }
-        }
         return response;
     }
 
@@ -8512,35 +8315,87 @@ public class Wiki implements Comparable<Wiki>
      */
     protected HttpRequest.Builder makeConnection(String url) throws IOException
     {
-        var builder = HttpRequest.newBuilder(URI.create(url))
+        return HttpRequest.newBuilder(URI.create(url))
             .timeout(Duration.ofMillis(read_timeout_msec))
-            .header("User-Agent", useragent);
-        if (zipped)
-            builder = builder.header("Accept-encoding", "gzip");
-        return builder;
+            .header("User-Agent", useragent)
+            .header("Accept-encoding", "gzip");
     }
 
+    /**
+     *  Checks for errors from standard read/write requests and throws the
+     *  appropriate unchecked exception.
+     *
+     *  @param response the response from the server to analyze
+     *  @param errors additional errors to check for where throwing an unchecked
+     *  exception is the desired behavior (function is of MediaWiki error 
+     *  message)
+     *  @param warnings additional errors to check for where throwing an exception
+     *  is not required (function is of MediaWiki error message)
+     *  @throws RuntimeException or subclasses depending on the type of errors
+     *  checked for
+     *  @return whether the action was successful
+     *  @since 0.37
+     */
+    protected boolean detectUncheckedErrors(String response, Map<String, Function<String, ? extends RuntimeException>> errors,
+        Map<String, Consumer<String>> warnings)
+    {
+        if (response.contains("<error code="))
+        {
+            String error = parseAttribute(response, "code", 0);
+            String description = parseAttribute(response, "info", 0);
+            if (errors != null && errors.containsKey(error))
+                throw errors.get(error).apply(description);
+            if (warnings != null && warnings.containsKey(error))
+            {
+                warnings.get(error).accept(description);
+                return false;
+            }
+            switch (error)
+            {
+                case "assertbotfailed":
+                case "assertuserfailed":
+                    throw new AssertionError(description);
+                case "permissiondenied":
+                    throw new SecurityException(description);
+                // Something *really* bad happened. Most of these are self-explanatory
+                // and are indicative of bugs (not necessarily in this framework) or
+                // can be avoided entirely. Others are kicked to the caller to handle.
+                default:
+                    throw new UnknownError("MW API error. Server response was: " + response);
+            }
+        }
+        return true;
+    }
+    
     /**
      *  Checks for errors from standard read/write requests and performs
      *  occasional status checks.
      *
      *  @param line the response from the server to analyze
      *  @param caller what we tried to do
+     *  @param uncheckederrors additional errors to check for where throwing an
+     *  unchecked exception is the desired behavior (function is of MediaWiki 
+     *  error message)
+     *  @param info additional errors to check for where throwing an exception
+     *  is not required (function is of MediaWiki error message)
      *  @throws CredentialException if the page is protected
      *  @throws AccountLockedException if the user is blocked
-     *  @throws HttpRetryException if the database is locked or action was
-     *  throttled and a retry failed
      *  @throws AssertionError if assertions fail
+     *  @throws RuntimeException if any 
+     *  @throws IOException if a network error occurs
      *  @throws UnknownError in the case of a MediaWiki bug
+     *  @returns whether the action was successful
      *  @since 0.18
      */
-    protected void checkErrorsAndUpdateStatus(String line, String caller) throws IOException, LoginException
+    protected boolean checkErrorsAndUpdateStatus(String line, String caller, 
+        Map<String, Function<String, ? extends RuntimeException>> uncheckederrors,
+        Map<String, Consumer<String>> info) throws IOException, LoginException
     {
         // perform various status checks every 100 or so edits
         if (statuscounter > statusinterval)
         {
             // purge user rights in case of desysop or loss of other priviliges
-            user = getUser(user.getUsername());
+            user = getUsers(List.of(user.getUsername())).get(0);
             if ((assertion & ASSERT_SYSOP) == ASSERT_SYSOP && !user.isA("sysop"))
                 // assert user.isA("sysop") : "Sysop privileges missing or revoked, or session expired";
                 throw new AssertionError("Sysop privileges missing or revoked, or session expired");
@@ -8553,11 +8408,10 @@ public class Wiki implements Comparable<Wiki>
         else
             statuscounter++;
 
-        // successful
         if (!line.contains("<error code=\""))
-            return;
-        // FIXME: this is never executed - makeApiCall munches errors before this
+            return true;
         String error = parseAttribute(line, "code", 0);
+        String description = parseAttribute(line, "info", 0);
         switch (error)
         {
             // protected pages
@@ -8570,14 +8424,20 @@ public class Wiki implements Comparable<Wiki>
             case "customjsprotected":
             case "customcssjsprotected":
             case "cascadeprotected":
-                throw new CredentialException("Page is protected.");
+            case "fileexists-shared-forbidden":
+                throw new CredentialException(description);
             // banned accounts
             case "blocked":
             case "blockedfrommail":
             case "autoblocked":
-                log(Level.SEVERE, caller, "Cannot " + caller + " - user is blocked!.");
-                throw new AccountLockedException("Current user is blocked!");
+                throw new AccountLockedException(description);
+            // upload errors
+            case "copyuploadbaddomain":
+                throw new AccessDeniedException(description);
+            case "http-bad-status":
+                throw new IOException("Server-side network error when fetching image: " + line);
         }
+        return detectUncheckedErrors(line, uncheckederrors, info);
     }
 
     /**
