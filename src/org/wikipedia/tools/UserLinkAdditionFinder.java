@@ -38,6 +38,7 @@ public class UserLinkAdditionFinder
 {
     private static int threshold = 50;
     private final WMFWiki wiki;
+    private static final WMFWikiFarm sessions = WMFWikiFarm.instance();
     
     /**
      *  Runs this program.
@@ -53,17 +54,17 @@ public class UserLinkAdditionFinder
             .addHelp()
             .addVersion("UserLinkAdditionFinder v0.02\n" + CommandLineParser.GPL_VERSION_STRING)
             .addSingleArgumentFlag("--wiki", "example.org", "The wiki to fetch data from (default: en.wikipedia.org)")
-            .addSingleArgumentFlag("--user", "user", "Get links for this user only.")
+            .addSingleArgumentFlag("--user", "user", "Get links for this user.")
+            .addSingleArgumentFlag("--category", "category", "Get links for all users from this category (recursive).")
             .addBooleanFlag("--linksearch", "Conduct a linksearch to count links and filter commonly used domains.")
             .addBooleanFlag("--removeblacklisted", "Remove blacklisted links")
             .addSingleArgumentFlag("--fetchafter", "date", "Fetch only edits after this date.")
             .addSection("If a file is not specified, a dialog box will prompt for one.")
             .parse(args);
 
-        WMFWiki thiswiki = WMFWiki.newSession(parsedargs.getOrDefault("--wiki", "en.wikipedia.org"));
+        WMFWiki thiswiki = sessions.sharedSession(parsedargs.getOrDefault("--wiki", "en.wikipedia.org"));
         boolean linksearch = parsedargs.containsKey("--linksearch");
         boolean removeblacklisted = parsedargs.containsKey("--removeblacklisted");
-        String user = parsedargs.get("--user");
         String datestring = parsedargs.get("--fetchafter");
         String filename = parsedargs.get("default");
         OffsetDateTime date = datestring == null ? null : OffsetDateTime.parse(datestring);
@@ -73,10 +74,10 @@ public class UserLinkAdditionFinder
         elp.setMaxLinks(threshold);
 
         // read in from file
-        List<String> users;
-        if (user == null)
+        List<String> users = CommandLineParser.parseUserOptions(parsedargs, thiswiki);
+        if (users.isEmpty())
         {
-            Path fp = null;
+            Path fp;
             if (filename == null)
             {
                 JFileChooser fc = new JFileChooser();
@@ -88,8 +89,6 @@ public class UserLinkAdditionFinder
                 fp = Paths.get(filename);
             users = Files.readAllLines(fp, Charset.forName("UTF-8"));
         }
-        else
-            users = List.of(user);
 
         // Map structure:
         // * results: revid -> links added in that revision
@@ -115,14 +114,15 @@ public class UserLinkAdditionFinder
         }
         
         // remove blacklisted links
-        Collection<String> domains = linkdomains.values();
+        Collection<String> domains = new TreeSet(linkdomains.values());
+        ExternalLinks el = ExternalLinks.of(thiswiki);
         if (removeblacklisted)
         {
             Iterator<String> iter = domains.iterator();
             while (iter.hasNext())
             {
                 String link = iter.next();
-                if (thiswiki.isSpamBlacklisted(linkdomains.get(link)))
+                if (el.isSpamBlacklisted(linkdomains.get(link)))
                     iter.remove();
             }
         }
@@ -327,7 +327,7 @@ public class UserLinkAdditionFinder
 
         // some HTML strings we are looking for
         // see https://en.wikipedia.org/w/api.php?action=compare&fromrev=77350972&torelative=prev
-        String diffaddedbegin = "<td class=\"diff-addedline\">";
+        String diffaddedbegin = "<td class=\"diff-addedline diff-side-added\">";
         String diffaddedend = "</td>";
         String deltabegin = "<ins class=\"diffchange diffchange-inline\">";
         String deltaend = "</ins>";

@@ -39,23 +39,31 @@ public class XWikiContributionSurveyor
      *  Runs this program.
      *  @param args the command line arguments, args[0] = individual user,
      *  args[1] = optional additional category
+     *  @throws Exception if a network error occurs
      */
     public static void main(String[] args) throws Exception
     {
-        WMFWikiFarm sessions = new WMFWikiFarm();
+        WMFWikiFarm sessions = WMFWikiFarm.instance();
         WMFWiki enWiki = sessions.sharedSession("en.wikipedia.org");
         // Users.of(enWiki).cliLogin();
-        List<String> users = new ArrayList<>();
-        users.add(args[0]);
-        if (args.length > 1)
-            users.addAll(enWiki.getCategoryMembers(args[1], true, Wiki.USER_NAMESPACE));
-        users.replaceAll(enWiki::removeNamespace);
+        
+        Map<String, String> parsedargs = new CommandLineParser()
+            .synopsis("org.wikipedia.tools.XWikiContributionSurveyor", "[options]")
+            .description("Survey the contributions of a large number of wiki editors across all wikis.")
+            .addHelp()
+            .addVersion("XWikiContributionSurveyor v0.01\n" + CommandLineParser.GPL_VERSION_STRING)
+            .addSingleArgumentFlag("--user", "user", "Survey the given user.")
+            .addSingleArgumentFlag("--category", "category", "Fetch a list of users from the given category (recursive).")
+            .addBooleanFlag("--newonly", "Survey only page creations.")
+            .parse(args);
+        List<String> users = CommandLineParser.parseUserOptions(parsedargs, enWiki);
+        boolean newonly = parsedargs.containsKey("--newonly");
         
         Set<String> wikis = new HashSet<>();
         wikis.add("en.wikipedia.org");
-        for (String luser : users)
+        for (String user : users)
         {
-            Map<String, Object> ginfo = sessions.getGlobalUserInfo(luser);
+            Map<String, Object> ginfo = sessions.getGlobalUserInfo(user);
             for (var entry : ginfo.entrySet())
             {
                 Object value = entry.getValue();
@@ -76,12 +84,19 @@ public class XWikiContributionSurveyor
             {
                 WMFWiki wikisession = sessions.sharedSession(wiki);
                 outwriter.write("==" + wiki + "==\n\n");
-                ContributionSurveyor cs = makeContributionSurveyor(wikisession);
-                for (String page : cs.outputContributionSurvey(users, true, false, false, Wiki.MAIN_NAMESPACE))
-                {
-                    String prefix = wiki.substring(0, wiki.indexOf("."));
-                    if (wiki.equals("www.wikidata.org"))
-                        prefix = "d";
+                ContributionSurveyor cs = makeContributionSurveyor(wikisession, newonly);
+                
+                String prefix = wiki.substring(0, wiki.indexOf("."));
+                if (wiki.equals("www.wikidata.org"))
+                    prefix = "d";
+                List<String> pages;
+                if (wiki.equals("commons.wikimedia.org"))
+                    pages = cs.outputContributionSurvey(users, true, false, true, Wiki.MAIN_NAMESPACE);
+                else
+                    pages = cs.outputContributionSurvey(users, true, false, false, Wiki.MAIN_NAMESPACE);
+                
+                for (String page : pages)
+                {    
                     page = page.replace("[[:", "[[:" + prefix + ":");
                     page = page.replace("[[Special", "[[:" + prefix + ":Special");
                     outwriter.write(page);
@@ -91,11 +106,11 @@ public class XWikiContributionSurveyor
         }
     }
     
-    private static ContributionSurveyor makeContributionSurveyor(Wiki wiki)
+    private static ContributionSurveyor makeContributionSurveyor(Wiki wiki, boolean newonly)
     {
         ContributionSurveyor cs = new ContributionSurveyor(wiki);
         cs.setComingled(true);
-        cs.setNewOnly(true);
+        cs.setNewOnly(newonly);
         return cs;
     }
 }
