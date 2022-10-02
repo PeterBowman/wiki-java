@@ -157,16 +157,15 @@ public class WMFWikiFarm
      *  </ul>
      * 
      *  @see #dbNameToDomainName
-     *  @param username the username of the global user. IPs and non-existing users
-     *  are not allowed.
+     *  @param username the username of the global user or null if the user does
+     *  not exist. IPs are not allowed.
      *  @return user info as described above
      *  @throws IOException if a network error occurs
      *  @since WMFWiki 0.01
      */
     public Map<String, Object> getGlobalUserInfo(String username) throws IOException
     {
-        // fixme(?): throws UnknownError ("invaliduser" if user is an IP, doesn't exist
-        // or otherwise is invalid
+        // FIXME: throws UnknownError ("invaliduser" if user is an IP or is otherwise invalid
         WMFWiki wiki = sharedSession("meta.wikimedia.org");
         wiki.requiresExtension("CentralAuth");
         Map<String, String> getparams = new HashMap<>();
@@ -176,6 +175,8 @@ public class WMFWikiFarm
         getparams.put("guiuser", wiki.normalize(username));
         String line = wiki.makeApiCall(getparams, null, "WMFWiki.getGlobalUserInfo");
         wiki.detectUncheckedErrors(line, null, null);
+        if (line.contains("missing=\"\""))
+            return null;
         
         // misc properties
         Map<String, Object> ret = new HashMap<>();
@@ -306,46 +307,27 @@ public class WMFWikiFarm
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "wbgetentities");
         getparams.put("sites", dbname);
-        
-        // WORKAROUND: this module doesn't accept mixed GET/POST requests
-        // often need to slice up titles into smaller chunks than slowmax (here 25)
-        // FIXME: replace with constructTitleString when Wikidata is behaving correctly
-        TreeSet<String> ts = new TreeSet<>();
-        for (String title : titles)
-            ts.add(wiki.normalize(title));
-        List<String> titles_enc = new ArrayList<>(ts);
-        ArrayList<String> titles_chunked = new ArrayList<>();
-        int count = 0;
-        do
-        {
-            titles_chunked.add(String.join("|", 
-                titles_enc.subList(count, Math.min(titles_enc.size(), count + 25))));
-            count += 25;
-        }
-        while (count < titles_enc.size());
-        
+                
         Map<String, String> results = new HashMap<>();
         WMFWiki wikidata_l = sharedSession("www.wikidata.org");
-        for (String chunk : titles_chunked)
+        for (String chunk : wikidata_l.constructTitleString(titles))
         {
-            getparams.put("titles", chunk);
-            String line = wikidata_l.makeApiCall(getparams, null, "getWikidataItem");
+            String line = wikidata_l.makeApiCall(getparams, Map.of("titles", chunk), "getWikidataItem");
             wikidata_l.detectUncheckedErrors(line, null, null);
             String[] entities = line.split("<entity ");
             for (int i = 1; i < entities.length; i++)
             {
                 if (entities[i].contains("missing=\"\""))
                     continue;
-                String wdtitle = wiki.parseAttribute(entities[i], " id", 0);
+                String wdtitle = wikidata_l.parseAttribute(entities[i], " id", 0);
                 int index = entities[i].indexOf("\"" + dbname + "\"");
-                String localtitle = wiki.parseAttribute(entities[i], "title", index);
+                String localtitle = wikidata_l.parseAttribute(entities[i], "title", index);
                 results.put(localtitle, wdtitle);
             }
         }
-        // reorder
-        List<String> ret = new ArrayList<>();
-        for (String title : titles)
-            ret.add(results.get(wiki.normalize(title)));
+        List<String> ret = wikidata_l.reorder(titles, results);
+        wikidata_l.log(Level.INFO, "WMFWikiFarm.getWikidataItems", 
+            "Successfully retrieved Wikidata items for " + titles.size() + " pages.");
         return ret;
     }
 }

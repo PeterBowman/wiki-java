@@ -36,15 +36,14 @@ public class BlockLockStuff
     public static void main(String[] args) throws Exception
     {
         Wiki enWiki = sessions.sharedSession("en.wikipedia.org");
-        // List<String> socks = enWiki.getCategoryMembers("Category:Wikipedia sockpuppets of Bodiadub", true, Wiki.USER_NAMESPACE);
-        List<String> socks = Files.readAllLines(Paths.get("spam2.txt"));
+        List<String> socks = enWiki.getCategoryMembers("Category:Wikipedia sockpuppets of Bodiadub", true, Wiki.USER_NAMESPACE);
+        // List<String> socks = Files.readAllLines(Paths.get("spam2.txt"));
         
         lockFinder(socks);
+        blockFinder(socks);
         staleScreener(socks);
         
         // TODO: accept arbitrary input
-        // TODO: determine unblocked accounts
-        // TODO: determine G5 date - first lock or block as per block list
     }
     
     public static void lockFinder(List<String> socks) throws Exception
@@ -59,7 +58,7 @@ public class BlockLockStuff
             // but less data transfer. Also, as usual, the W?F can't be arsed doing this
             // properly: https://phabricator.wikimedia.org/T261752
             Map<String, Object> ginfo = sessions.getGlobalUserInfo(sock);
-            if (!(Boolean)ginfo.get("locked"))
+            if (ginfo != null && !(Boolean)ginfo.get("locked"))
                 System.out.print("|" + meta.removeNamespace(sock));
         }
         System.out.println("}}\n\n");
@@ -78,27 +77,28 @@ public class BlockLockStuff
         for (int i = 0; i < socks.size(); i++)
         {
             String sock = socks.get(i);
+            String sock2 = enWiki.removeNamespace(sock);
             Wiki.RequestHelper rh = enWiki.new RequestHelper().byUser(sock);
             List<Wiki.LogEntry> socklogs = enWiki.getLogEntries(Wiki.ALL_LOGS, null, rh);
             if (socklogs.isEmpty())
             {
-                unregistered.add("*{{checkuser|" + sock + "}}");
+                unregistered.add("*{{checkuser|" + sock2 + "}}");
                 continue;
             }
             
             List<Wiki.Revision> sockcontribs = contribs.get(i);
             OffsetDateTime lastlog = socklogs.get(0).getTimestamp();
             OffsetDateTime lastactive = lastlog;
-            if (sockcontribs.size() > 0)
+            if (!sockcontribs.isEmpty())
             {
                 OffsetDateTime lastedit = sockcontribs.get(0).getTimestamp();
                 if (lastedit.isAfter(lastlog))
                     lastactive = lastedit;
             }
             if (lastactive.isAfter(staledate))
-                notstale.add("*{{checkuser|" + sock + "}}");
+                notstale.add("*{{checkuser|" + sock2 + "}}");
             else
-                stale.add("*{{checkuser|" + sock + "}}");
+                stale.add("*{{checkuser|" + sock2 + "}}");
         }
         System.out.println(";Not stale:");
         for (String s : notstale)
@@ -109,5 +109,31 @@ public class BlockLockStuff
         System.out.println(";Not registered locally");
         for (String s : unregistered)
             System.out.println(s);
+    }
+    
+    public static void blockFinder(List<String> socks) throws Exception
+    {
+        Wiki enWiki = sessions.sharedSession("en.wikipedia.org");
+        List<Wiki.LogEntry> blocklist = enWiki.getBlockList(socks, null);
+        List<String> unblocked = new ArrayList<>(socks);
+        
+        // TODO: add locks - not possible currently due to:
+        // 1. T261752
+        // 2. The API call behind WMFWiki.getGlobalUserInfo doesn't return when the lock occurred
+        // 3. Wiki.getLogEntries("globalauth", null, null) doesn't return the details because it
+        //    is not a native Wiki log type
+        // Any will result in this bug being fixed.
+        Wiki.LogEntry earliest = blocklist.isEmpty() ? null : blocklist.get(0);
+        for (Wiki.LogEntry block : blocklist)
+        {
+            unblocked.remove(block.getTitle());
+            OffsetDateTime ts = block.getTimestamp();
+            if (ts.isBefore(earliest.getTimestamp()))
+                earliest = block;
+        }
+        System.out.println(";Unblocked users:");
+        for (String user : unblocked)
+            System.out.println("*{{user|" + enWiki.removeNamespace(user) + "}}");
+        System.out.println("G5 date: " + earliest.getTimestamp());
     }
 }

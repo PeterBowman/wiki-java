@@ -1,6 +1,6 @@
 /**
- *  @(#)Wiki.java 0.36 08/02/2019
- *  Copyright (C) 2007 - 2019 MER-C and contributors
+ *  @(#)Wiki.java 0.38 08/02/2019
+ *  Copyright (C) 2007 - 2022 MER-C and contributors
  *
  *  This program is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU General Public License
@@ -44,7 +44,7 @@ import javax.security.auth.login.*;
  *  Requires JDK 11 or greater. Uses the <a
  *  href="https://mediawiki.org/wiki/API:Main_page">MediaWiki API</a> for most
  *  operations. It is recommended that the server runs the latest version
- *  of MediaWiki (1.31), otherwise some functions may not work. This framework
+ *  of MediaWiki (1.39), otherwise some functions may not work. This framework
  *  requires no dependencies outside the core JDK and does not implement any
  *  functionality added by MediaWiki extensions.
  *  <p>
@@ -77,7 +77,7 @@ import javax.security.auth.login.*;
  * .</ul>
  *
  *  @author MER-C and contributors
- *  @version 0.36
+ *  @version 0.38
  */
 public class Wiki implements Comparable<Wiki>
 {
@@ -405,7 +405,7 @@ public class Wiki implements Comparable<Wiki>
         unknown;
     }
 
-    private static final String version = "0.36";
+    private static final String version = "0.38";
 
     // fundamental URL strings
     private final String protocol, domain, scriptPath;
@@ -1812,7 +1812,7 @@ public class Wiki implements Comparable<Wiki>
     }
 
     /**
-     * Gets key-value property mappings on a list of pages. Returns:
+     * Gets key-value property mappings on a list of pages.
      * @param pages the pages to retrieve properties from.
      * @return a list of properties in key-value format. Special or Media
      * files and missing or invalid titles are listed as {@code null}.
@@ -1858,7 +1858,6 @@ public class Wiki implements Comparable<Wiki>
                 metamap.put(title, tempmap);
             }
         }
-
         Map<String, String>[] props = new HashMap[pages.size()];
         // Reorder
         for (int i = 0; i < pages2.size(); i++)
@@ -2088,7 +2087,7 @@ public class Wiki implements Comparable<Wiki>
                 String key = parseAttribute(results[i], isrevisions ? "revid" : "title", 0);
                 if (!results[i].contains("missing=\"\"") && !results[i].contains("texthidden=\"\""))
                 {
-                    int x = results[i].indexOf("<rev ", i);
+                    int x = results[i].indexOf("<rev ");
                     int y = results[i].indexOf('>', x) + 1;
                     // this </rev> tag is not present for empty pages/revisions
                     int z = results[i].indexOf("</rev>", y);
@@ -2388,8 +2387,18 @@ public class Wiki implements Comparable<Wiki>
     /**
      *  Deletes a page. Does not delete any page with more than 5000 revisions.
      *  {@linkplain #setThrottle(int) throttled}.
+     * 
+     *  <p>
+     *  If <code>deltalk</code> is specified, delete also the associated talk
+     *  page. The 5000 revision limit <a href="https://gerrit.wikimedia.org/r/c/mediawiki/core/+/715954/">applies 
+     *  to both pages in combination, not individually</a>. The reason for 
+     *  deleting the talk page cannot be changed, it is [[MediaWiki:Delete-talk-summary-prefix]], 
+     *  where <code>$1</code> is <code>reason</code>. This parameter is ignored
+     *  if <code>title</code> is a talk page or the talk page does not exist.
+     *  
      *  @param title the page to delete
      *  @param reason the reason for deletion
+     *  @param deltalk delete the associated talk page
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @throws SecurityException if the user lacks the privileges to delete
      *  @throws CredentialExpiredException if cookies have expired
@@ -2398,7 +2407,7 @@ public class Wiki implements Comparable<Wiki>
      *  or Media page
      *  @since 0.24
      */
-    public synchronized void delete(String title, String reason) throws IOException, LoginException
+    public synchronized void delete(String title, String reason, boolean deltalk) throws IOException, LoginException
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Cannot delete Special and Media pages!");
@@ -2416,6 +2425,8 @@ public class Wiki implements Comparable<Wiki>
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "delete");
         getparams.put("title", normalize(title));
+        if (deltalk)
+            getparams.put("deletetalk", "1");
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
@@ -2429,9 +2440,19 @@ public class Wiki implements Comparable<Wiki>
      *  Undeletes a page. Equivalent to [[Special:Undelete]]. Restores ALL deleted
      *  revisions and files by default. This method is {@linkplain
      *  #setThrottle(int) throttled}.
+     * 
+     *  <p>
+     *  If <code>undeltalk</code> is specified, undelete all revisions of the 
+     *  associated talk page. The reason for undeleting the talk page cannot be
+     *  changed, it is [[MediaWiki:Undelete-talk-summary-prefix]], where
+     *  <code>$1</code> is <code>reason</code>. If the talk page exists and has
+     *  deleted revisions, those revisions will be restored. This parameter is 
+     *  ignored if <code>title</code> is a talk page or the talk page has no 
+     *  deleted revisions.
      *
      *  @param title a page to undelete
      *  @param reason the reason for undeletion
+     *  @param undeltalk undelete the associated talk page
      *  @param revisions a list of revisions for selective undeletion
      *  @throws IOException or UncheckedIOException if a network error occurs
      *  @throws SecurityException if the user lacks the privileges to undelete
@@ -2441,7 +2462,8 @@ public class Wiki implements Comparable<Wiki>
      *  or Media page
      *  @since 0.30
      */
-    public synchronized void undelete(String title, String reason, Revision... revisions) throws IOException, LoginException
+    public synchronized void undelete(String title, String reason, boolean undeltalk, Revision... revisions)
+        throws IOException, LoginException
     {
         if (namespace(title) < 0)
             throw new UnsupportedOperationException("Cannot delete Special and Media pages!");
@@ -2451,7 +2473,9 @@ public class Wiki implements Comparable<Wiki>
         Map<String, String> getparams = new HashMap<>();
         getparams.put("action", "undelete");
         getparams.put("title", normalize(title));
-
+        if (undeltalk)
+            getparams.put("undeletetalk", "1");
+        
         Map<String, Object> postparams = new HashMap<>();
         postparams.put("reason", reason);
         postparams.put("token", getToken("csrf"));
@@ -2941,7 +2965,7 @@ public class Wiki implements Comparable<Wiki>
         {
             String parsedtitle = parseAttribute(xml, "from", j);
             for (int i = 0; i < inputpages.size(); i++)
-                if (inputpages.get(i).equals(parsedtitle))
+                if (parsedtitle.equals(inputpages.get(i)))
                     inputpages.set(i, parseAttribute(xml, "to", j));
         }
     }
@@ -4172,11 +4196,8 @@ public class Wiki implements Comparable<Wiki>
                 intermediate.put(parsedtitle, metadata);
             }
         }
-        
-        // reorder results
-        List<Map<String, Object>> ret = new ArrayList<>();
-        for (String normalizedtitle : files2)
-            ret.add(intermediate.get(normalizedtitle));
+        List<Map<String, Object>> ret = reorder(files2, intermediate);
+        log(Level.INFO, "getFileMetadata", "Successfully retrieved file metadata for " + files.size() + " files.");
         return ret;
     }
 
@@ -4766,12 +4787,7 @@ public class Wiki implements Comparable<Wiki>
                 metamap.put(parsedname, user);
             }
         }
-
-        // reorder
-        List<User> ret = new ArrayList<>();
-        for (String username : usernames)
-            ret.add(metamap.get(normalize(username)));
-        
+        List<Wiki.User> ret = reorder(usernames, metamap);
         log(Level.INFO, "getUsers", "Successfully retrieved user info for " + usernames.size() + " users.");
         return ret;
     }
@@ -5640,11 +5656,7 @@ public class Wiki implements Comparable<Wiki>
                 metamap.put(parsedtitle, values);
             }
         }
-
-        // reorder
-        List<int[]> ret = new ArrayList<>();
-        for (String category : norm_cats)
-            ret.add(metamap.get(category));
+        List<int[]> ret = reorder(norm_cats, metamap);
         log(Level.INFO, "getCategoryMemberCounts", "Successfully retrieved category member counts for " + categories.size() + " categories.");
         return ret;
     }
@@ -5911,6 +5923,9 @@ public class Wiki implements Comparable<Wiki>
             entries.addAll(makeListQuery("bk", getparams, null, "getBlockList", limit, parser));
         else
         {
+            // This would have been a normal vectorized query except that 
+            // this API call is vectorized over bkusers instead of titles
+            // TODO: the return order should be the input order with null interspersed accordingly.
             for (String bkusers : constructTitleString(users))
             {
                 getparams.put("bkusers", bkusers);
@@ -8005,17 +8020,18 @@ public class Wiki implements Comparable<Wiki>
      *  @param limit fetch no more than this many results
      *  @param parser a BiConsumer that parses the XML returned by the MediaWiki
      *  API into things we want, dumping them into the given List
+     *  @param <T> the return object type (typically String)
      *  @return a list of results, where each element corresponds to the element
      *  at the same index in the input title list
      *  @since 0.36
      *  @throws IOException if a network error occurs
      */
-    protected List<List<String>> makeVectorizedQuery(String queryPrefix, Map<String, String> getparams,
-        List<String> titles, String caller, int limit, BiConsumer<String, List<String>> parser) throws IOException
+    protected <T> List<List<T>> makeVectorizedQuery(String queryPrefix, Map<String, String> getparams,
+        List<String> titles, String caller, int limit, BiConsumer<String, List<T>> parser) throws IOException
     {
         // copy because normalization and redirect resolvers overwrite
         List<String> titles2 = new ArrayList<>(titles);
-        List<Map<String, List<String>>> stuff = new ArrayList<>();
+        List<Map<String, List<T>>> stuff = new ArrayList<>();
         Map<String, Object> postparams = new HashMap<>();
         for (String temp : constructTitleString(titles2))
         {
@@ -8032,10 +8048,10 @@ public class Wiki implements Comparable<Wiki>
                 for (int i = 1; i < x.length; i++)
                 {
                     String parsedtitle = parseAttribute(x[i], "title", 0);
-                    List<String> list = new ArrayList<>();
+                    List<T> list = new ArrayList<>();
                     parser.accept(x[i], list);
 
-                    Map<String, List<String>> intermediate = new HashMap<>();
+                    Map<String, List<T>> intermediate = new HashMap<>();
                     intermediate.put(parsedtitle, list);
                     results.add(intermediate);
                 }
@@ -8043,7 +8059,7 @@ public class Wiki implements Comparable<Wiki>
         }
 
         // prepare the return list
-        List<List<String>> ret = Stream.generate(() -> new ArrayList<String>())
+        List<List<T>> ret = Stream.generate(() -> new ArrayList<T>())
             .limit(titles2.size())
             .collect(Collectors.toCollection(ArrayList::new));
         // then retrieve the results from the intermediate list of maps,
@@ -8051,7 +8067,7 @@ public class Wiki implements Comparable<Wiki>
         stuff.forEach(map ->
         {
             String parsedtitle = map.keySet().iterator().next();
-            List<String> templates = map.get(parsedtitle);
+            List<T> templates = map.get(parsedtitle);
             for (int i = 0; i < titles2.size(); i++)
                 if (titles2.get(i).equals(parsedtitle))
                     ret.get(i).addAll(templates);
@@ -8113,6 +8129,24 @@ public class Wiki implements Comparable<Wiki>
         }
         while (getparams.containsKey("continue") && results.size() < limit);
         return results;
+    }
+    
+    /**
+     *  Reorders outputs such that the order of a query's results is the same
+     *  order of the input titles. 
+     *  @param <T> output type
+     *  @param inputs input list of titles
+     *  @param results unordered query results in Map format with key =
+     *  title (doesn't have to be normalised)
+     *  @return output list whose order corresponds to the inputs
+     *  @since 0.38
+     */
+    protected <T> List<T> reorder(List<String> inputs, Map<String, T> results)
+    {
+        List<T> ret = new ArrayList<>();
+        for (String input : inputs)
+            ret.add(input == null ? null : results.get(normalize(input)));
+        return ret;
     }
 
     // miscellany
@@ -8619,14 +8653,19 @@ public class Wiki implements Comparable<Wiki>
     protected List<String> constructTitleString(List<String> titles)
     {
         // sort and remove duplicates
-        List<String> titles_unique = titles.stream().sorted().distinct().collect(Collectors.toList());
+        List<String> titles_unique = titles.stream()
+        // should behave well with nulls if one gets fed in from a revdel somewhere
+            .filter(t -> t != null) 
+            .sorted().distinct().collect(Collectors.toList());
+        if (titles_unique.isEmpty())
+            return Collections.emptyList();
         
         // actually construct the string
-        ArrayList<String> ret = new ArrayList<>();
+        List<String> ret = new ArrayList<>();
         for (int i = 0; i < titles_unique.size() / slowmax + 1; i++)
         {
             ret.add(String.join("|", 
-            		titles_unique.subList(i * slowmax, Math.min(titles_unique.size(), (i + 1) * slowmax))));     
+                titles_unique.subList(i * slowmax, Math.min(titles_unique.size(), (i + 1) * slowmax))));     
         }
         return ret;
     }
