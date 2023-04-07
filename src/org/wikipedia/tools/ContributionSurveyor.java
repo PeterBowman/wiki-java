@@ -76,6 +76,7 @@ public class ContributionSurveyor
             .addSingleArgumentFlag("--category", "category", "Fetch a list of users from the given category (recursive).")
             .addSingleArgumentFlag("--sourcewiki", "example.com", "Use a different wiki than --wiki as a source of users.")
             .addSingleArgumentFlag("--user", "user", "Survey the given user.")
+            .addSingleArgumentFlag("--blockedafter", "date", "Only survey unblocked users or those blocked on the target wiki after a certain date.")
             .addBooleanFlag("--comingle", "If there are multiple users, combine their edits into the one survey (edits/uploads only).")
             .addSection("Survey options:")
             .addBooleanFlag("--images", "Survey images both on the home wiki and Commons.")
@@ -101,9 +102,11 @@ public class ContributionSurveyor
         String wikipage = parsedargs.get("--wikipage");
         String earliestdatestring = parsedargs.get("--editsafter");
         String latestdatestring = parsedargs.get("--editsbefore");
+        String blockedafterstring = parsedargs.get("--blockedafter");
 
         OffsetDateTime editsafter = (earliestdatestring == null) ? null : OffsetDateTime.parse(earliestdatestring);
         OffsetDateTime editsbefore = (latestdatestring == null) ? null : OffsetDateTime.parse(latestdatestring);
+        OffsetDateTime blockedafter = (blockedafterstring == null) ? null : OffsetDateTime.parse(blockedafterstring);
 
         // fetch user list
         List<String> users = CommandLineParser.parseUserOptions(parsedargs, sourcewiki);
@@ -137,6 +140,20 @@ public class ContributionSurveyor
                 if (sourcewiki.namespace(line) == Wiki.USER_NAMESPACE)
                     users.add(sourcewiki.removeNamespace(line));
         }
+        
+        // filter for users blocked after __ (for persistent sockfarms)
+        if (blockedafter != null)
+        {
+            List<Wiki.User> userobjs = homewiki.getUsers(users);
+            List<String> newusers = new ArrayList<>();
+            for (Wiki.User user : userobjs)
+            {
+                Wiki.LogEntry block = user.getBlockDetails();
+                if (block == null || block.getTimestamp().isAfter(blockedafter))
+                    newusers.add(user.getUsername());
+            }
+            users = new ArrayList<>(newusers);
+        }
 
         // output file
         if (outfile == null)
@@ -157,7 +174,7 @@ public class ContributionSurveyor
             ns = new int[] { Wiki.MAIN_NAMESPACE, Wiki.USER_NAMESPACE };
         else
             ns = new int[] { Wiki.MAIN_NAMESPACE };
-
+        
         ContributionSurveyor surveyor = new ContributionSurveyor(homewiki);
         surveyor.setDateRange(editsafter, editsbefore);
         surveyor.setMinimumSizeDiff(Integer.parseInt(parsedargs.getOrDefault("--minsize", "150")));
@@ -169,16 +186,24 @@ public class ContributionSurveyor
             parsedargs.containsKey("--deleted"), parsedargs.containsKey("--images"), ns);
         
         Path path = Paths.get(outfile);
+        StringBuilder temp = new StringBuilder("Command line: <kbd>java org.wikipedia.tools.ContributionSurveyor");
+        for (String arg : args)
+        {
+            temp.append(" ");
+            temp.append(arg);
+        }
         try (BufferedWriter outwriter = Files.newBufferedWriter(path))
         {
             outwriter.write(output.get(0));
+            outwriter.write(temp.toString() + "</kbd>");
         }
         for (int i = 1; i < output.size(); i++)
         {
-            path = Paths.get(outfile + String.format(".%03d", i));
+            path = Paths.get("%s.%03d".formatted(outfile, i));
             try (BufferedWriter outwriter = Files.newBufferedWriter(path))
             {
                 outwriter.write(output.get(i));
+                outwriter.write(temp.toString() + "</kbd>");
             }
         }
     }
@@ -558,7 +583,7 @@ public class ContributionSurveyor
                 newpage = true;
             }
             // generate the diff strings now to avoid a second iteration
-            temp.append(String.format("[[Special:Diff/%d|(%+d)]]", edit.getID(), edit.getSizeDiff()));
+            temp.append("[[Special:Diff/%d|(%+d)]]".formatted(edit.getID(), edit.getSizeDiff()));
         }
         int numedits = edits.size();
         out.append("[[:");

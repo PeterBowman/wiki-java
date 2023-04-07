@@ -355,8 +355,8 @@ public class WikiTest
     public void exists() throws Exception
     {
         List<String> titles = List.of("Main Page", "Tdkfgjsldf", "User:MER-C", 
-            "Wikipedia:Skfjdl", "Main Page", "Fish & chips");
-        boolean[] expected = new boolean[] { true, false, true, false, true, true };
+            "Wikipedia:Skfjdl", "Main Page", "Fish & chips", "[[illegal title]]");
+        boolean[] expected = new boolean[] { true, false, true, false, true, true, false };
         assertArrayEquals(expected, enWiki.exists(titles));
     }
 
@@ -450,7 +450,7 @@ public class WikiTest
         byte[] imageData = Files.readAllBytes(tempfile.toPath());
         byte[] hash = sha256.digest(imageData);
         assertEquals("c0538b43b2a84b0b0caee667b17aa8d311300efd56252d972b6ce20bde6dd758",
-            String.format("%064x", new BigInteger(1, hash)));
+            "%064x".formatted(new BigInteger(1, hash)));
         Files.delete(tempfile.toPath());
     }
 
@@ -752,7 +752,7 @@ public class WikiTest
         pages.add(null);
         assertNull(enWiki.getPageProperties(pages).get(0));
         
-        pages.addAll(List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages", "HomePage", "1&nbsp;000", "[invalid]"));
+        pages.addAll(List.of("Main Page", "IPod", "Main_Page", "Special:Specialpages", "Talk:Main Page", "1&nbsp;000", "[invalid]"));
         List<Map<String, String>> pageprops = enWiki.getPageProperties(pages);
         assertEquals(pages.size(), pageprops.size());
 
@@ -775,7 +775,7 @@ public class WikiTest
         // Special page = return null
         assertNull(pageprops.get(4), "special page");
         
-        // redirect, there are no relevant properties here, check for empty map
+        // page with no properties
         assertTrue(pageprops.get(5).isEmpty(), "page with no properties");
         
         // HTML entities in title (special normalization case, we don't expect any props here either)
@@ -1230,7 +1230,7 @@ public class WikiTest
         assertNull(users.get(5), "IP address range");
 
         assertEquals(usernames.get(2), users.get(2).getUsername(), "normalized username");
-        assertFalse(users.get(2).isBlocked());
+        assertNull(users.get(2).getBlockDetails());
         assertEquals(Wiki.Gender.unknown, users.get(2).getGender());
         assertEquals("2006-07-07T10:52:41Z",
             users.get(2).getRegistrationDate().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
@@ -1248,7 +1248,18 @@ public class WikiTest
 
         assertEquals(usernames.get(4), users.get(4).getUsername());
         assertEquals(2, users.get(4).countEdits());
-        assertTrue(users.get(4).isBlocked());
+        Wiki.LogEntry entry = users.get(4).getBlockDetails();
+        assertNotNull(entry);
+        assertEquals("MER-C", entry.getUser());
+        assertEquals("2018-04-18T18:46:05Z", entry.getTimestamp().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        assertEquals("spammer", entry.getComment());
+        Map<String, String> details = entry.getDetails();
+        assertEquals("infinite", details.get("expiry"));
+        assertFalse(details.containsKey("noautoblock"));
+        assertTrue(details.containsKey("nocreate"));
+        // https://phabricator.wikimedia.org/T329426
+        // assertTrue(details.containsKey("noemail"));
+        // assertTrue(details.containsKey("notalk"));
     }
 
     @Test
@@ -1410,6 +1421,13 @@ public class WikiTest
         List<String> actual = enWiki.constructTitleString(titles);
         assertEquals(expected, actual);
         
+        // Determine whether the correct number of items is returned.
+        titles.clear();
+        for (int i = 0; i < 50; i++)
+            titles.add("A" + i);
+        actual = enWiki.constructTitleString(titles);
+        assertEquals(1, actual.size());
+        
         // should behave well with nulls if one gets fed in from a revdel somewhere
         titles.clear();
         titles.add(null);
@@ -1417,7 +1435,7 @@ public class WikiTest
         titles.add("A");
         assertEquals(List.of("A"), enWiki.constructTitleString(titles));
     }
-
+    
     // INNER CLASS TESTS
 
     @Test

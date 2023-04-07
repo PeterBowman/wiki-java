@@ -163,7 +163,7 @@ public class CCIAnalyzer
             analyzer.loadDiffs(page);
             analyzer.analyzeDiffs(page);
             Files.writeString(path, analyzer.createOutput(page));
-            path = Paths.get(outfile + String.format(".%03d", ++counter));
+            path = Paths.get("%s.%03d".formatted(outfile, ++counter));
         }
     }
     
@@ -478,12 +478,58 @@ public class CCIAnalyzer
         
         // clean up output CCI listing
         String[] articles = ccib.toString().split("\\n");
-        StringBuilder cleaned = new StringBuilder();
+        String header = null, footer = null;
         int removedarticles = 0;
         Pattern pattern = Pattern.compile(".*edits?\\):\\s+");
         Pattern pattern2 = Pattern.compile("\\(\\d+ edits?\\)");
+        Pattern headerptn = Pattern.compile(".+Pages (\\d+) to (\\d+).+");
+        List<String> cleaned_temp = new ArrayList<>();
         for (String article : articles)
         {
+            // remove headers
+            if (headerptn.matcher(article).matches())
+            {
+                if (header == null)
+                    header = article;
+                continue;
+            }
+            if (header == null)
+            {
+                out.append(article);
+                out.append("\n");
+                continue;
+            }
+            if (article.trim().isEmpty() || article.contains("Special:Contributions"))
+                continue;
+            if (article.startsWith("This report generated "))
+            {
+                footer = article;
+                continue;
+            }
+            if (article.matches("^==[^=].+")) // new user
+            {
+                // redistribute headers for the previous user
+                Matcher m = headerptn.matcher(header);
+                m.find();
+                final int start = Integer.parseInt(m.group(1)) - 1;
+                String header2 = new StringBuilder(header).replace(m.start(2), m.end(2), "%d").replace(m.start(1), m.end(1), "%d").toString();
+                List<String> outlist = Pages.toWikitextPaginatedList(cleaned_temp, s -> s.substring(1), 
+                    (s, e) -> header2.formatted(s + start, e + start), 20, false);
+                for (String section : outlist)
+                    out.append(section);
+                if (footer != null)
+                {
+                    out.append(footer);
+                    out.append("\n");
+                    footer = null;
+                }
+                out.append(article);
+                out.append("\n");
+                header = null;
+                cleaned_temp.clear();
+                continue;
+            }
+            
             // remove articles where all diffs are trivial
             if (pattern.matcher(article).matches())
             {
@@ -495,10 +541,31 @@ public class CCIAnalyzer
             for (int pos = article.indexOf("[[Special:Diff"); pos >= 0; pos = article.indexOf("[[Special:Diff", pos + 1))
                 count++;
             article = pattern2.matcher(article).replaceAll("(" + count + (count == 1 ? " edit)" : " edits)"));
-            cleaned.append(article);
-            cleaned.append("\n");
+            cleaned_temp.add(article);
         }
-        out.append(cleaned);
+        if (header != null)
+        {
+            // redistribute headers for the last user
+            Matcher m = headerptn.matcher(header);
+            m.find();
+            final int start = Integer.parseInt(m.group(1)) - 1;
+            String header2 = new StringBuilder(header).replace(m.start(2), m.end(2), "%d").replace(m.start(1), m.end(1), "%d").toString();
+            List<String> outlist = Pages.toWikitextPaginatedList(cleaned_temp, s -> s.substring(1), 
+                (s, e) -> header2.formatted(s + start, e + start), 20, false);
+            for (String section : outlist)
+                out.append(section);
+        }
+        else
+        {
+            for (String article : cleaned_temp)
+            {
+                out.append(article);
+                out.append("\n");
+            }
+        }
+        
+        if (footer != null)
+            out.append(footer);
         out.append("\n");
         System.err.printf("%d of %d diffs and %d articles removed.%n", page.baseremoveddiffs + page.minoredits.size(), 
             page.diffcount, page.baseremovedarticles + removedarticles);
