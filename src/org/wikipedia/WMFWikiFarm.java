@@ -23,8 +23,10 @@ package org.wikipedia;
 import java.io.IOException;
 import java.time.OffsetDateTime;
 import java.util.*;
-import java.util.function.Consumer;
+import java.util.concurrent.*;
+import java.util.function.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  *  Manages shared WMFWiki sessions and contains methods for dealing with WMF
@@ -37,6 +39,15 @@ public class WMFWikiFarm
     private final HashMap<String, WMFWiki> sessions = new HashMap<>();
     private static final WMFWikiFarm SHARED_INSTANCE = new WMFWikiFarm();
     private Consumer<WMFWiki> setupfn;
+    
+    /**
+     *  List of Wikimedia domains. I am surprised this is not available by some 
+     *  API.
+     */
+    public static final List<String> WMF_DOMAINS = List.of("wikimedia.org", "wikipedia.org",
+        "wiktionary.org", "wikibooks.org", "wikisource.org", "wikivoyage.org",
+        "wikinews.org", "wikiquote.org", "wikidata.org", "wikifunctions.org", "wikiversity.org",
+        "wikimediafoundation.org", "mediawiki.org", "toolforge.org");
     
     /**
      *  Computes the domain name (to use in {@link WMFWiki#newSession}) the 
@@ -79,6 +90,29 @@ public class WMFWikiFarm
     }
     
     /**
+     *  Inverts the results of {@link Wiki#interWikiMap()} to return a Map from
+     *  domain name to prefix. When there are multiple prefixes for one domain,
+     *  choose the prefix with the shortest length.
+     *  @param iwmap an interwiki mapping
+     *  @return (see above)
+     */
+    public static Map<String, String> invertInterWikiMap(Map<String, String> iwmap)
+    {
+        Map<String, String> ret = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : iwmap.entrySet())
+        {
+            String prefix = entry.getKey();
+            String target = entry.getValue();
+            String domain = ExternalLinks.extractDomain(target);
+            ret.merge(domain, prefix, (oldval, newval) -> (oldval.length() > newval.length()) ? newval : oldval);
+        }
+        // reinsert the www in special cases (the interwiki map omits them)
+        ret.put("www.wikidata.org", "d");
+        ret.put("www.mediawiki.org", "mw");
+        return ret;
+    }
+    
+    /**
      *  Returns a shared session manager. Note that multiple instances - i.e.
      *  multiple groups of sessions - are still permitted.
      *  @return a shared session manager
@@ -118,6 +152,14 @@ public class WMFWikiFarm
     }
     
     /**
+     *  Removes all shared sessions from this object.
+     */
+    public void clear()
+    {
+        sessions.clear();
+    }
+    
+    /**
      *  Sets a function that is called every time a WMFWiki session is created
      *  with this manager. The sole parameter is the new session. Use for a
      *  common setup routine.
@@ -141,7 +183,8 @@ public class WMFWikiFarm
      *  <li>locked - (Boolean) whether this user account has been locked
      *  <li>editcount - (int) total global edit count
      *  <li>wikicount - (int) total number of wikis edited
-     *  <li>DBNAME (e.g. "enwikisource" == "en.wikisource.org") - see below
+     *  <li>wikis (Map&lt;String, Map&lt;String, Object&gt;&gt;) a map of dbname 
+     *      (e.g. "enwikisource" == "en.wikisource.org") to the below
      *  </ul>
      * 
      *  <p>
@@ -215,6 +258,7 @@ public class WMFWikiFarm
         
         // individual wikis
         int mergedend = line.indexOf("</merged>");
+        Map<String, Map<String, Object>> wikis = new HashMap<>();
         String[] accounts = line.substring(mergedindex, mergedend).split("<account ");
         for (int i = 1; i < accounts.length; i++)
         {
@@ -250,8 +294,9 @@ public class WMFWikiFarm
                 groups.add(accounts[i].substring(x + 7, y));
             }
             userinfo.put("groups", groups);
-            ret.put(wiki.parseAttribute(accounts[i], "wiki", 0), userinfo);
+            wikis.put(wiki.parseAttribute(accounts[i], "wiki", 0), userinfo);
         }
+        ret.put("wikis", wikis);
         ret.put("editcount", globaledits);
         ret.put("wikicount", wikicount);
         return ret;
@@ -302,7 +347,7 @@ public class WMFWikiFarm
      *  item or the local article doesn't exist
      *  @throws IOException if a network error occurs
      */
-    public List<String> getWikidataItems(WMFWiki wiki, List<String> titles) throws IOException
+    public List<String> getWikidataItems(WMFWiki wiki, SequencedCollection<String> titles) throws IOException
     {
         String dbname = (String)wiki.getSiteInfo().get("dbname");
         Map<String, String> getparams = new HashMap<>();
@@ -329,6 +374,43 @@ public class WMFWikiFarm
         List<String> ret = wikidata_l.reorder(titles, results);
         wikidata_l.log(Level.INFO, "WMFWikiFarm.getWikidataItems", 
             "Successfully retrieved Wikidata items for " + titles.size() + " pages.");
+        return ret;
+    }
+
+    /**
+     *  Runs the given function on a set of wikis with specified concurrency 
+     *  and query limit.
+     *  @param <W> a Wiki type
+     *  @param <R> the type of the function output
+     *  @param wikis the collection of wikis to apply the function to
+     *  @param fn a function to apply to each wiki, returning some results
+     *  @param threads number of threads to use
+     *  @return a sorted map: wiki &#8594; function output for that wiki
+     */
+    public <W extends Wiki, R> Map<W, R> forAllWikis(Collection<W> wikis, Function<W, R> fn, int threads)
+    {
+        Map<W, R> ret = new TreeMap<>();
+        if (threads == 1)
+        {
+            for (W wiki : wikis)
+                ret.put(wiki, fn.apply(wiki));
+            return ret;
+        }
+        ForkJoinPool pool = null;
+        try
+        {
+            pool = new ForkJoinPool(threads - 1);
+            ConcurrentMap<W, R> cm = new ConcurrentHashMap<>();
+            for (W wiki : wikis)
+                pool.execute(() -> cm.put(wiki, fn.apply(wiki)));
+            while (!pool.awaitQuiescence(1000, TimeUnit.SECONDS)); // wait until complete, this counts as an extra thread
+            ret.putAll(cm);
+        }
+        finally
+        {
+            if (pool != null)
+                pool.shutdown();
+        }
         return ret;
     }
 }

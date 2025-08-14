@@ -42,8 +42,8 @@ public class UserspaceAnalyzer
         // parse command line arguments
         if (args.length == 0)
             args = new String[] { "--help" };
-        Map<String, String> parsedargs = new CommandLineParser()
-            .synopsis("org.wikipedia.tools.UserspaceAnalyzer", "[search term]")
+        Map<String, String> parsedargs = new CommandLineParser("org.wikipedia.tools.UserspaceAnalyzer")
+            .synopsis("[search term]")
             .description("Searches userspace for pages eligible for deletion per [[WP:CSD#U5]]")
             .addHelp()
             .addVersion("UserspaceAnalyzer v0.01\n" + CommandLineParser.GPL_VERSION_STRING)
@@ -51,7 +51,7 @@ public class UserspaceAnalyzer
         
         Wiki wiki = Wiki.newSession("en.wikipedia.org");
         List<Map<String, Object>> results = wiki.search(args[0], Wiki.USER_NAMESPACE);
-        HashSet<String> users = new HashSet<>(500);
+        LinkedHashSet<String> users = new LinkedHashSet<>(500);
         for (Map<String, Object> result : results)
         {
             String username = (String)result.get("title");
@@ -60,9 +60,7 @@ public class UserspaceAnalyzer
             username = wiki.getRootPage(username);
             users.add(username.substring(5)); // remove User: prefix
         }
-
-        List<String> usernames = new ArrayList<>(users);
-        List<Wiki.User> userinfo = wiki.getUsers(usernames);
+        List<Wiki.User> userinfo = wiki.getUsers(users);
         
         System.out.printf("""
             == Results for %s ==

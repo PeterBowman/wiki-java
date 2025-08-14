@@ -8,6 +8,8 @@
 -->
 <%@ include file="security.jspf" %>
 <%
+    if (!ServletUtils.showCaptcha(request, response, List.of("page"), captcha_script_nonce, 3))
+        throw new SkipPageException();
     request.setAttribute("toolname", "User watchlist");
     request.setAttribute("earliest_default", LocalDate.now(ZoneOffset.UTC).minusDays(30));
 
@@ -20,13 +22,13 @@
         inputpage_attribute = ServletUtils.sanitizeForAttribute(inputpage);
     }
 
-    String temp = request.getParameter("skip");
+    String temp = request.getParameter("offset");
     int skip = (temp == null) ? 0 : Integer.parseInt(temp);
     skip = Math.max(skip, 0);
     boolean newonly = (request.getParameter("newonly") != null);
     
     Wiki enWiki = sessions.sharedSession("en.wikipedia.org");
-    enWiki.setQueryLimit(30000); // 60 network requests
+    enWiki.setQueryLimit(20000); // 40 network requests
     Users userUtils = Users.of(enWiki);
     Revisions revisionUtils = Revisions.of(enWiki);
     Pages pageUtils = Pages.of(enWiki);
@@ -148,8 +150,7 @@ Someone # Spam
     }
 
     // top pagination
-    String requesturl = "./userwatchlist.jsp?page=" +  inputpage_url + "&earliest=" + earliest
-        + "&latest=" + latest + "&skip=";
+    String requesturl = ServletUtils.getRequestURL(request);
     out.println("<hr>");
     out.println(ServletUtils.generatePagination(requesturl, skip, 50, input.size()));
 

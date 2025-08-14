@@ -19,8 +19,10 @@
  */
 package org.wikipedia.tools;
 
-import java.io.IOException;
+import java.io.*;
+import java.nio.file.Path;
 import java.util.*;
+import java.time.OffsetDateTime;
 import org.wikipedia.Wiki;
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
@@ -35,21 +37,21 @@ public class CommandLineParserTest
     @Test
     public void synopsis()
     {
-        CommandLineParser clp = new CommandLineParser().synopsis("TestProgram", "[test arguments]");
+        CommandLineParser clp = new CommandLineParser("TestProgram").synopsis("[test arguments]");
         assertEquals("SYNOPSIS:\n\tjava TestProgram [test arguments]\n\n", clp.buildHelpString());
     }
     
     @Test
     public void description()
     {
-        CommandLineParser clp = new CommandLineParser().description("Test description");
+        CommandLineParser clp = new CommandLineParser("").description("Test description");
         assertEquals("DESCRIPTION:\n\tTest description\n\n", clp.buildHelpString());
     }
     
     @Test
     public void addHelp()
     {
-        CommandLineParser clp = new CommandLineParser().addHelp();
+        CommandLineParser clp = new CommandLineParser("").addHelp();
         assertEquals("\t--help\n\t\tPrints this screen and exits.\n", clp.buildHelpString());
     }
     
@@ -57,7 +59,7 @@ public class CommandLineParserTest
     public void version()
     {
         String version = "Test Program v0.01: Copyright (C) MER-C 2018.\n";
-        CommandLineParser clp = new CommandLineParser().addVersion(version);
+        CommandLineParser clp = new CommandLineParser("").addVersion(version);
         assertEquals("\t--version\n\t\tOutputs version information and exits.\n", clp.buildHelpString());
         assertEquals(version, clp.buildVersionString());
     }
@@ -66,7 +68,7 @@ public class CommandLineParserTest
     public void addSingleArgumentFlag()
     {
         String description = "Test flag";
-        CommandLineParser clp = new CommandLineParser()
+        CommandLineParser clp = new CommandLineParser("")
             .addSingleArgumentFlag("--test", "[something]", description);
         assertEquals("\t--test [something]\n\t\t" + description + "\n", clp.buildHelpString());
     }
@@ -75,7 +77,7 @@ public class CommandLineParserTest
     public void addBooleanFlag()
     {
         String description = "Test Boolean flag";
-        CommandLineParser clp = new CommandLineParser().addBooleanFlag("--test", description);
+        CommandLineParser clp = new CommandLineParser("").addBooleanFlag("--test", description);
         assertEquals("\t--test\n\t\t" + description + "\n", clp.buildHelpString());
     }
     
@@ -83,7 +85,7 @@ public class CommandLineParserTest
     public void addSection()
     {
         String title = "Test section:";
-        CommandLineParser clp = new CommandLineParser().addSection(title);
+        CommandLineParser clp = new CommandLineParser("").addSection(title);
         assertEquals("\n" + title + "\n", clp.buildHelpString());
     }
     
@@ -91,14 +93,15 @@ public class CommandLineParserTest
     public void buildHelpString()
     {
         // Integration test
-        String actual = new CommandLineParser()
-            .synopsis("TestProgram", "[test arguments]")
+        String actual = new CommandLineParser("TestProgram")
+            .synopsis("[test arguments]")
             .description("A description of the program")
             .addHelp()
             .addVersion("Test Program v0.01: Copyright (C) MER-C 2018.")
             .addSection("Options:")
             .addBooleanFlag("--boolean", "A boolean flag.")
             .addSingleArgumentFlag("--flag", "[string]", "Set some value to string.")
+            .addUserInputOptions("X")
             .buildHelpString();
         String expected = """
             SYNOPSIS:
@@ -117,6 +120,14 @@ public class CommandLineParserTest
                     A boolean flag.
                 --flag [string]
                     Set some value to string.
+                --user user 
+                    X this user.
+                --category category 
+                    X all users from this category (recursive).
+                --wikipage 'Main Page'
+                    X all users listed on the wiki page [[Main Page]].
+                --infile users.txt 
+                    X all users in this file.
             """.replace("    ", "\t");
         System.out.println(expected);
         System.out.println(actual);
@@ -127,14 +138,14 @@ public class CommandLineParserTest
     public void buildVersionString()
     {
         String version = "Test Program v0.01: Copyright (C) MER-C 2018.\n";
-        String actual = new CommandLineParser().addVersion(version).buildVersionString();
+        String actual = new CommandLineParser("").addVersion(version).buildVersionString();
         assertEquals(version, actual);
     }
     
     @Test
     public void parse()
     {
-        CommandLineParser clp = new CommandLineParser()
+        CommandLineParser clp = new CommandLineParser("")
             .addBooleanFlag("--true", "A true boolean variable.")
             .addBooleanFlag("--false", "A false boolean variable.")
             .addSingleArgumentFlag("--string", "SomeString", "A String variable.");
@@ -162,11 +173,20 @@ public class CommandLineParserTest
     }
     
     @Test
+    public void commandString()
+    {
+        String[] args = new String[] { "--a", "b", "--c", "d", "e"};
+        CommandLineParser clp = new CommandLineParser("TestApp");
+        assertEquals("java TestApp --a b --c d e", clp.commandString(args));
+    }
+    
+    @Test
     public void parseUserOptions() throws IOException
     {
         Map<String, String> args = new HashMap<>();
         Wiki enWiki = Wiki.newSession("en.wikipedia.org");
-        List<String> users = CommandLineParser.parseUserOptions(args, enWiki);
+        // parseUserOptions2 because otherwise it will show a filechooser and potentially exit
+        List<String> users = CommandLineParser.parseUserOptions2(args, enWiki);
         assertTrue(users.isEmpty());
         
         args.put("--user", "Bodiadub");
@@ -184,5 +204,60 @@ public class CommandLineParserTest
         users = CommandLineParser.parseUserOptions(args, enWiki);
         assertFalse(users.contains("Bodiadub"));
         assertTrue(users.size() > 30);
+        
+        args.remove("--category");
+        Wiki testWiki = Wiki.newSession("test.wikipedia.org");
+        args.put("--wikipage", "User:MER-C/UnitTests/UserList");
+        users = CommandLineParser.parseUserOptions(args, testWiki);
+        assertTrue(users.containsAll(List.of("TestUser1", "TestUser2", "TestUser3", "TestUser4")));
+        assertEquals(4, users.size());
+        
+        // wikipage (non-existant)
+        args.put("--wikipage", "Invalid title[]");
+        users = CommandLineParser.parseUserOptions2(args, enWiki);
+        assertTrue(users.isEmpty());
+    }
+    
+    @Test
+    public void parseDateRange()
+    {
+        String sstr = "2018-11-17T17:30:54.101Z";
+        String estr = "2021-01-24T09:55:10.023Z";
+        OffsetDateTime sdate = OffsetDateTime.parse(sstr);
+        OffsetDateTime edate = OffsetDateTime.parse(estr);
+        Map<String, String> args = new HashMap<>();
+        
+        List<OffsetDateTime> dates = CommandLineParser.parseDateRange(args, "--start", "--end");
+        assertNull(dates.get(0));
+        assertNull(dates.get(1));
+        
+        args.put("--start", sstr);
+        dates = CommandLineParser.parseDateRange(args, "--start", "--end");
+        assertEquals(sdate, dates.get(0));
+        assertNull(dates.get(1));
+        
+        args.put("--end", estr);
+        dates = CommandLineParser.parseDateRange(args, "--start", "--end");
+        assertEquals(sdate, dates.get(0));
+        assertEquals(edate, dates.get(1));
+        
+        args.remove("--start");
+        dates = CommandLineParser.parseDateRange(args, "--start", "--end");
+        assertNull(dates.get(0));
+        assertEquals(edate, dates.get(1));
+        
+        // can't test for wrong way round because it will exit
+    }
+    
+    @Test
+    public void parseFileOption() throws IOException
+    {
+        File temp = File.createTempFile("test-parseFileOption", null);
+        temp.deleteOnExit();
+        Path p = temp.toPath();
+        Map<String, String> options = Map.of("--test", p.toString());
+        assertEquals(p, CommandLineParser.parseFileOption(options, "--test", "", "", true));
+        
+        // cannot test null or file not found - triggers a filechooser and may exit
     }
 }

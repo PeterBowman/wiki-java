@@ -77,17 +77,15 @@ public class NPPCheck
          */
         public static Mode fromString(String s)
         {
-            if (s == null)
-                return null;
-            switch (s)
+            return switch (s)
             {
-                case "patrols": return PATROLS;
-                case "drafts": return DRAFTS;
-                case "userspace": return USERSPACE;
-                case "unpatrolled": return UNPATROLLED;
-                case "redirects": return REDIRECTS;
-                default: return null;
-            }
+                case "patrols" -> PATROLS;
+                case "drafts" -> DRAFTS;
+                case "userspace" -> USERSPACE;
+                case "unpatrolled" -> UNPATROLLED;
+                case "redirects" -> REDIRECTS;
+                case null, default -> null;
+            };
         }
         
         /**
@@ -116,8 +114,8 @@ public class NPPCheck
      */
     public static void main(String[] args) throws IOException
     {
-        Map<String, String> parsedargs = new CommandLineParser()
-            .synopsis("org.wikipedia.tools.NPPCheck", "[options]")
+        Map<String, String> parsedargs = new CommandLineParser("org.wikipedia.tools.NPPCheck")
+            .synopsis("[options]")
             .description("Tool for reviewing the work of new page patrollers")
             .addBooleanFlag("--unpatrolled", "Output results for unpatrolled new articles (REQUIRES NPP RIGHTS)")
             .addBooleanFlag("--patrols", "Output results from new pages patrol")
@@ -126,10 +124,13 @@ public class NPPCheck
             .addBooleanFlag("--redirects", "Output results for expanded redirects")
             .addSingleArgumentFlag("--user", "user", "Output results for this user only "
                 + "(requires one of --patrols, --userspace or --drafts)")
+            .addSingleArgumentFlag("--start", "date", "Include patrols made after this date (ISO format).")
+            .addSingleArgumentFlag("--end", "date", "Include patrols made before this date (ISO format).")
             .addVersion("0.01")
             .addHelp()
             .parse(args);
         String user = parsedargs.get("--user");
+        List<OffsetDateTime> dt = CommandLineParser.parseDateRange(parsedargs, "--start", "--end");
         
         WMFWikiFarm sessions = WMFWikiFarm.instance();
         WMFWiki enWiki = sessions.sharedSession("en.wikipedia.org");
@@ -142,7 +143,7 @@ public class NPPCheck
             check.setMode(Mode.UNPATROLLED);
             check.setReviewer(null);
             
-            List<? extends Wiki.Event> le = check.fetchLogs(null, null);
+            List<? extends Wiki.Event> le = check.fetchLogs(dt.get(0), dt.get(1));
             System.out.println(check.outputTable(le));
         }
         
@@ -152,7 +153,7 @@ public class NPPCheck
             check.setMode(Mode.PATROLS);
             check.setReviewer(user);
         
-            List<? extends Wiki.Event> le = check.fetchLogs(null, null);
+            List<? extends Wiki.Event> le = check.fetchLogs(dt.get(0), dt.get(1));
             System.out.println("==NPP patrols ==");        
             if (le.isEmpty())
                 System.out.println("No new pages patrolled.");
@@ -166,7 +167,7 @@ public class NPPCheck
             check.setMode(Mode.DRAFTS);
             check.setReviewer(user);
             
-            List<? extends Wiki.Event> le = check.fetchLogs(null, null);
+            List<? extends Wiki.Event> le = check.fetchLogs(dt.get(0), dt.get(1));
             System.out.println("==Pages moved from draft to main ==");
             if (le.isEmpty())
                 System.out.println("No pages moved from draft to main.");
@@ -180,7 +181,7 @@ public class NPPCheck
             check.setMode(Mode.USERSPACE);
             check.setReviewer(user);
             
-            List<? extends Wiki.Event> le = check.fetchLogs(null, null);
+            List<? extends Wiki.Event> le = check.fetchLogs(dt.get(0), dt.get(1));
             System.out.println("==Pages moved from user to main ==");
             if (le.isEmpty())
                 System.out.println("No pages moved from user to main.");
@@ -194,7 +195,7 @@ public class NPPCheck
             check.setMode(Mode.REDIRECTS);
             check.setReviewer(null);
             
-            List<? extends Wiki.Event> le = check.fetchLogs(null, null);
+            List<? extends Wiki.Event> le = check.fetchLogs(dt.get(0), dt.get(1));
             System.out.println("==Expanded redirects ==");
             if (le.isEmpty())
                 System.out.println("No expanded redirects.");
@@ -386,15 +387,11 @@ public class NPPCheck
         List<String> pages = new ArrayList<>();
         for (Wiki.Event event : events)
         {
-            String title;
-            if (event instanceof Wiki.LogEntry)
+            pages.add(switch(event)
             {
-                Wiki.LogEntry log = (Wiki.LogEntry)event;
-                title = log.getType().equals(Wiki.MOVE_LOG) ? log.getDetails().get("target_title") : event.getTitle();
-            }
-            else
-                title = event.getTitle();
-            pages.add(title);
+                case Wiki.LogEntry log when log.getType().equals(Wiki.MOVE_LOG) -> log.getDetails().get("target_title");
+                default -> event.getTitle();
+            });
         }
         
         // account for pages subsequently moved in namespace
@@ -419,15 +416,11 @@ public class NPPCheck
         List<String> pages = new ArrayList<>();
         for (Wiki.Event event : events)
         {
-            String title;
-            if (event instanceof Wiki.LogEntry)
+            pages.add(switch(event)
             {
-                Wiki.LogEntry log = (Wiki.LogEntry)event;
-                title = log.getType().equals(Wiki.MOVE_LOG) ? log.getDetails().get("target_title") : event.getTitle();
-            }
-            else
-                title = event.getTitle();
-            pages.add(title);
+                case Wiki.LogEntry log when log.getType().equals(Wiki.MOVE_LOG) -> log.getDetails().get("target_title");
+                default -> event.getTitle();
+            });
         }
         
         // account for pages subsequently moved in namespace

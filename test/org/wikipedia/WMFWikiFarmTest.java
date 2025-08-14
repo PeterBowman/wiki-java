@@ -22,7 +22,8 @@ package org.wikipedia;
 
 import java.time.OffsetDateTime;
 import java.util.*;
-import org.junit.jupiter.api.Test;
+import java.util.function.Function;
+import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -45,6 +46,17 @@ public class WMFWikiFarmTest
     }
     
     @Test
+    public void invertInterWikiMap()
+    {
+        Map<String, String> iwmap0 = WMFWikiFarm.instance().sharedSession("en.wikipedia.org").interWikiMap();
+        Map<String, String> iwmap = WMFWikiFarm.invertInterWikiMap(iwmap0);
+        assertEquals("m", iwmap.get("meta.wikimedia.org"));
+        assertEquals("ja", iwmap.get("ja.wikipedia.org"));
+        assertEquals("d", iwmap.get("www.wikidata.org"));
+        assertEquals("mw", iwmap.get("www.mediawiki.org"));
+    }
+    
+    @Test
     public void getGlobalUserInfo() throws Exception
     {
         // locked account with local block
@@ -58,7 +70,7 @@ public class WMFWikiFarmTest
         assertEquals("enwiki", guserinfo.get("home"));
         
         // enwiki
-        Map luserinfo = (Map)guserinfo.get("enwiki");
+        Map luserinfo = (Map)((Map)guserinfo.get("wikis")).get("enwiki");
         assertEquals("https://en.wikipedia.org", luserinfo.get("url"));
         assertEquals(23, luserinfo.get("editcount"));
         assertEquals(OffsetDateTime.parse("2016-09-21T13:59:29Z"), luserinfo.get("registration"));
@@ -69,7 +81,7 @@ public class WMFWikiFarmTest
             + "[[w:en:Wikipedia:Sockpuppet investigations/Japanelemu]]", luserinfo.get("blockreason"));
         
         // meta
-        luserinfo = (Map)guserinfo.get("metawiki");
+        luserinfo = (Map)((Map)guserinfo.get("wikis")).get("metawiki");
         assertEquals("https://meta.wikimedia.org", luserinfo.get("url"));
         assertEquals(0, luserinfo.get("editcount"));
         assertEquals(OffsetDateTime.parse("2016-09-21T13:59:37Z"), luserinfo.get("registration"));
@@ -82,8 +94,8 @@ public class WMFWikiFarmTest
         // https://meta.wikimedia.org/wiki/Special:CentralAuth?target=Jimbo+Wales
         guserinfo = sessions.getGlobalUserInfo("Jimbo Wales");
         assertEquals(List.of("founder"), guserinfo.get("groups"));
-        luserinfo = (Map)guserinfo.get("enwiki");
-        assertEquals(List.of("checkuser", "founder", "suppress", "sysop"), luserinfo.get("groups"));
+        luserinfo = (Map)((Map)guserinfo.get("wikis")).get("enwiki");
+        assertEquals(List.of("extendedconfirmed", "founder"), luserinfo.get("groups"));
         
         // Non-existing user
         assertNull(sessions.getGlobalUserInfo("Jimbo Wal3s"));
@@ -106,6 +118,30 @@ public class WMFWikiFarmTest
     {
         WMFWikiFarm one = WMFWikiFarm.instance();
         assertEquals(one, sessions);
+    }
+    
+    @Test
+    public void getAllSharedSessions()
+    {
+        WMFWiki wiki1 = sessions.sharedSession("en.wikipedia.org");
+        WMFWiki wiki2 = sessions.sharedSession("de.wikipedia.org");
+        WMFWiki wiki3 = sessions.sharedSession("fr.wikipedia.org");
+        Collection<WMFWiki> stuff = sessions.getAllSharedSessions();
+        assertEquals(3, stuff.size());
+        assertTrue(stuff.contains(wiki1));
+        assertTrue(stuff.contains(wiki2));
+        assertTrue(stuff.contains(wiki3));
+    }
+    
+    @Test
+    public void clear()
+    {
+        WMFWiki wiki = sessions.sharedSession("en.wikipedia.org");
+        Collection<WMFWiki> stuff = sessions.getAllSharedSessions();
+        assertEquals(1, stuff.size());
+        sessions.clear();
+        stuff = sessions.getAllSharedSessions();
+        assertTrue(stuff.isEmpty());
     }
     
     @Test
@@ -140,5 +176,49 @@ public class WMFWikiFarmTest
         assertEquals("Q224615", actual.get(4));
         assertEquals("Q937", actual.get(5));
         assertNull(actual.get(6)); // local page exists, but no corresponding WD item
+    }
+    
+    @Test
+    public void forAllWikisTest()
+    {
+        List<String> wd = List.of("en.wikipedia.org", "test.wikipedia.org",
+            "de.wikipedia.org", "fr.wikipedia.org", "ar.wikipedia.org", "zh.wikipedia.org");
+        List<WMFWiki> wl = new ArrayList<>();
+        Map<WMFWiki, String> expected = new TreeMap<>();
+        for (String w : wd)
+        {
+            WMFWiki wiki = sessions.sharedSession(w);
+            wl.add(wiki);
+            expected.put(wiki, w);
+        }
+        long st = 300;
+        Function<WMFWiki, String> fn = wiki ->
+        { 
+            try
+            {
+                Thread.sleep(st + 1); // to test parallelism
+            }
+            catch (InterruptedException ex)
+            {
+            } 
+            return wiki.getDomain(); 
+        };
+        long time = System.currentTimeMillis();
+        assertEquals(expected, sessions.forAllWikis(wl, fn, 1));
+        long td = System.currentTimeMillis() - time;
+        assertTrue(td > st * wd.size());
+        for (int i = 2; i <= 3; i++)
+        {
+            time = System.currentTimeMillis();
+            assertEquals(expected, sessions.forAllWikis(wl, fn, i));
+            td = System.currentTimeMillis() - time;
+            assertTrue(td >= st/i * wd.size() && td < st/(i-1) * wd.size());
+        }
+    }
+    
+    @AfterEach
+    public void cleanup()
+    {
+        sessions.clear();
     }
 }

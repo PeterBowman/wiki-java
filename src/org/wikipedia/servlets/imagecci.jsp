@@ -18,30 +18,32 @@
 <%@ include file="security.jspf" %>
 <%@ include file="datevalidate.jspf" %>
 <%
+    if (!ServletUtils.showCaptcha(request, response, List.of("user"), captcha_script_nonce, 3))
+        throw new SkipPageException();
+        
     request.setAttribute("toolname", "Image contribution surveyor");
     String homewiki = ServletUtils.sanitizeForAttributeOrDefault(request.getParameter("wiki"), "en.wikipedia.org");
     String user = request.getParameter("user");
     if (user != null)
         request.setAttribute("contenttype", "text");
+    boolean transferred = (request.getParameter("transferred") != null);
 %>
 <%@ include file="header.jspf" %>
 <%
-    List<String> surveydata = null;
+    List<String> survey = null;
     if (user != null)
     {
         WMFWiki wiki = sessions.sharedSession(homewiki);
         ContributionSurveyor surveyor = new ContributionSurveyor(wiki);
         surveyor.setDateRange(earliest_odt, latest_odt);
-        surveydata = surveyor.outputContributionSurvey(List.of(user), false, false, true);
+        surveyor.setFooter("Survey URL: " + ServletUtils.getRequestURL(request));
+        surveyor.setSurveyingTransferredFiles(transferred);
+        survey = surveyor.outputContributionSurvey(List.of(user), false, false, true);
 
-        String footer = "Survey URL: " + request.getRequestURL() + "?" + request.getQueryString();
-        // TODO: output as ZIP
-        for (int i = 0; i < surveydata.size(); i++)
-            surveydata.set(i, surveydata.get(i) + footer);
-            
+        // TODO: output as ZIP (not straightforward: requires rewrite as Java Servlet)
         response.setHeader("Content-Disposition", "attachment; filename=" 
             + URLEncoder.encode(user, StandardCharsets.UTF_8) + ".txt");
-        out.print(String.join("\n", surveydata));
+        out.print(String.join("\n", survey));
         return;
     }
 %>
@@ -64,11 +66,14 @@ href="//en.wikipedia.org/wiki/WP:CCI">Contributor copyright investigations.</a>
     <td><input type=date name=earliest value="<%= earliest %>"> to 
         <input type=date name=latest value="<%= latest %>"> (inclusive)
 </table>
+<input type=checkbox name=transferred value="<%= transferred ? " checked" : "" %>">Include transferred files 
+    (may be inaccurate depending on username)
+<br>
 <input type=submit value="Survey user">
 </form>
 
 <%
-    if (user != null && surveydata.isEmpty())
+    if (user != null && survey.isEmpty())
         request.setAttribute("error", "ERROR: User " + ServletUtils.sanitizeForHTML(user) + " does not exist!");
 %>
 <%@ include file="footer.jspf" %>
